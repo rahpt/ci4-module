@@ -1,0 +1,4 @@
+vendor/
+*.bak
+.DS_Store
+.env

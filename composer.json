@@ -1,0 +1,62 @@
+{
+    "name": "rahpt/ci4-module",
+    "description": "Enterprise-grade modular system for CodeIgniter 4 with dependency management and structure validation",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "codeigniter",
+        "codeigniter4",
+        "modules",
+        "modular",
+        "architecture",
+        "psr-4",
+        "dependency-management",
+        "semver",
+        "enterprise"
+    ],
+    "homepage": "https://github.com/rahpt/ci4-module",
+    "support": {
+        "issues": "https://github.com/rahpt/ci4-module/issues",
+        "source": "https://github.com/rahpt/ci4-module",
+        "docs": "https://github.com/rahpt/ci4-module#readme"
+    },
+    "authors": [
+        {
+            "name": "Rahpt",
+            "email": "dev@example.com",
+            "homepage": "https://github.com/rahpt",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "codeigniter4/framework": "^4.5"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5",
+        "codeigniter4/devkit": "^1.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "Rahpt\\Ci4Module\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Rahpt\\Ci4Module\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test:coverage": "phpunit --coverage-html build/coverage"
+    },
+    "extra": {
+        "codeigniter4": {
+            "discover": [
+                "Rahpt\\Ci4Module\\Config\\Registrar"
+            ]
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
