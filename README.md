@@ -1,6 +1,6 @@
 # CodeIgniter 4 Module System - Core
 
-[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/rahpt/ci4-module)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/rahpt/ci4-module)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![PHP](https://img.shields.io/badge/php-%3E%3D8.1-brightgreen.svg)](https://php.net)
 
@@ -499,6 +499,20 @@ Contribuições são bem-vindas!
 
 ---
 
+## 🕒 Histórico de Versões
+
+### [1.1.0] - 2026-02-16
+- **Segurança**: Adicionada sanitização rigorosa de slugs de módulos para prevenir manipulação de caminhos.
+- **Arquitetura**: Implementação de sistema de Eventos (Event-Driven) para desacoplamento de pacotes.
+- **Melhoria**: Sistema de logs aprimorado para rastreabilidade de ativação.
+- **Segurança**: Validação de diretórios de escrita (WRITEPATH) antes de salvar registros.
+
+### [1.0.1] - 2026-02-15
+- Estabilização do sistema de autoload.
+- Correção de dependências SemVer.
+
+---
+
 ## 📄 Licença
 
 Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
@@ -519,5 +533,5 @@ Desenvolvido por **RahPT**
 
 ---
 
-**Versão**: 1.0.1  
-**Última Atualização**: 2026-02-15
+**Versão**: 1.1.0  
+**Última Atualização**: 2026-02-16

@@ -1,4 +1,7 @@
 vendor/
+composer.lock
 *.bak
 .DS_Store
 .env
+build/
+.phpunit.result.cache

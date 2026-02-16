@@ -3,7 +3,7 @@
 namespace Rahpt\Ci4Module\Config;
 
 /**
- * Registrar - Enables automatic discovery of module components in CI4.
+ * Registrar - Autoconfiguração de componentes do pacote ci4-module (Core) no CodeIgniter 4.
  */
 class Registrar
 {

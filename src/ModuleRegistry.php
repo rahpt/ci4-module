@@ -54,11 +54,11 @@ class ModuleRegistry
         }
     }
 
-    /**
-     * Update a module's status in the central registry.
-     */
     public function put(string $module, array $data): void
     {
+        // Sanitize module name
+        $module = preg_replace('/[^a-zA-Z0-9_\-]/', '', $module);
+        
         $fileName = $this->getCentralRegistryPath();
         $all = $this->all();
         
@@ -69,29 +69,37 @@ class ModuleRegistry
             throw new JsonException('Failed to encode central registry file.');
         }
 
+        // Ensure directory exists
+        $dir = dirname($fileName);
+        if (!is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+
         file_put_contents($fileName, $json, LOCK_EX);
 
-        // Invalida o cache de menus para refletir a mudança
-        if (class_exists(\Rahpt\Ci4ModuleNav\MenuRegistry::class)) {
-            \Rahpt\Ci4ModuleNav\MenuRegistry::clearCache();
+        // Trigger global event for decoupling
+        if (function_exists('events')) {
+            events()->trigger('rahpt.module.changed', $module, $data);
         }
     }
 
     public function activate(string $module): bool
     {
-        $data = $this->all();
-        $data[$module]['active'] = true;
-        $data[$module]['activated_at'] = date('Y-m-d H:i:s');
+        $module = preg_replace('/[^a-zA-Z0-9_\-]/', '', $module);
         
-        log_message('info', "Module '{$module}' activated");
-        // The original `put` method expects (string $module, array $data) and returns void.
-        // The provided change for `activate` calls `return $this->put($data);` where `$data` is the full registry.
-        // To make this syntactically correct and functional with the existing `put` signature,
-        // we need to call `put` with the specific module and its updated data.
-        // Also, `put` returns void, so `activate` should also return void or handle the return value.
-        // Assuming the intent was to update the specific module and then return true on success.
+        $data = $this->all();
+        $current = $data[$module] ?? [];
+        $current['active'] = true;
+        $current['activated_at'] = date('Y-m-d H:i:s');
+        
         try {
-            $this->put($module, $data[$module]);
+            $this->put($module, $current);
+            log_message('info', "Module '{$module}' activated");
+            
+            if (function_exists('events')) {
+                events()->trigger('rahpt.module.activated', $module);
+            }
+            
             return true;
         } catch (JsonException $e) {
             log_message('error', "Failed to activate module '{$module}': " . $e->getMessage());
@@ -99,9 +107,14 @@ class ModuleRegistry
         }
     }
 
-    public function deactivate(string $name): void
+    public function deactivate(string $module): void
     {
-        $this->put($name, ['active' => false]);
+        $module = preg_replace('/[^a-zA-Z0-9_\-]/', '', $module);
+        $this->put($module, ['active' => false]);
+        
+        if (function_exists('events')) {
+            events()->trigger('rahpt.module.deactivated', $module);
+        }
     }
 
     /**

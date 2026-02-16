@@ -9,10 +9,8 @@
         "modules",
         "modular",
         "architecture",
-        "psr-4",
-        "dependency-management",
-        "semver",
-        "enterprise"
+        "enterprise",
+        "rahpt"
     ],
     "homepage": "https://github.com/rahpt/ci4-module",
     "support": {
@@ -23,7 +21,7 @@
     "authors": [
         {
             "name": "Rahpt",
-            "email": "dev@example.com",
+            "email": "ci4-module@rah.pt",
             "homepage": "https://github.com/rahpt",
             "role": "Developer"
         }
