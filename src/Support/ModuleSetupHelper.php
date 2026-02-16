@@ -100,4 +100,16 @@ class ModuleSetupHelper
         }
         return str_contains(file_get_contents(self::AUTOLOAD_FILE), self::AUTOLOAD_MARKER);
     }
+
+    public static function getNamespace(): string
+    {
+        $config = config(\Rahpt\Ci4Module\Config\Modules::class);
+        return $config->baseNamespace ?? 'App\Modules';
+    }
+
+    public static function getBasePath(): string
+    {
+        $config = config(\Rahpt\Ci4Module\Config\Modules::class);
+        return $config->basePath ?? 'Modules';
+    }
 }
