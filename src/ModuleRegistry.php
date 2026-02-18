@@ -12,7 +12,7 @@ use Rahpt\Ci4Module\Config\Modules;
 class ModuleRegistry
 {
     protected Modules $config;
-    
+
     /**
      * Cache for module instances to avoid repeated instantiation
      */
@@ -42,7 +42,7 @@ class ModuleRegistry
         if (!is_file($fileName)) {
             return [];
         }
-        
+
         try {
             $data = json_decode(file_get_contents($fileName), true, 512, JSON_THROW_ON_ERROR);
             if ($module) {
@@ -58,10 +58,10 @@ class ModuleRegistry
     {
         // Sanitize module name
         $module = preg_replace('/[^a-zA-Z0-9_\-]/', '', $module);
-        
+
         $fileName = $this->getCentralRegistryPath();
         $all = $this->all();
-        
+
         $all[$module] = array_merge($all[$module] ?? ['active' => true], $data);
 
         $json = json_encode($all, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
@@ -78,28 +78,24 @@ class ModuleRegistry
         file_put_contents($fileName, $json, LOCK_EX);
 
         // Trigger global event for decoupling
-        if (function_exists('events')) {
-            events()->trigger('rahpt.module.changed', $module, $data);
-        }
+        \CodeIgniter\Events\Events::trigger('rahpt.module.changed', $module, $data);
     }
 
     public function activate(string $module): bool
     {
         $module = preg_replace('/[^a-zA-Z0-9_\-]/', '', $module);
-        
+
         $data = $this->all();
         $current = $data[$module] ?? [];
         $current['active'] = true;
         $current['activated_at'] = date('Y-m-d H:i:s');
-        
+
         try {
             $this->put($module, $current);
             log_message('info', "Module '{$module}' activated");
-            
-            if (function_exists('events')) {
-                events()->trigger('rahpt.module.activated', $module);
-            }
-            
+
+            \CodeIgniter\Events\Events::trigger('rahpt.module.activated', $module);
+
             return true;
         } catch (JsonException $e) {
             log_message('error', "Failed to activate module '{$module}': " . $e->getMessage());
@@ -111,10 +107,8 @@ class ModuleRegistry
     {
         $module = preg_replace('/[^a-zA-Z0-9_\-]/', '', $module);
         $this->put($module, ['active' => false]);
-        
-        if (function_exists('events')) {
-            events()->trigger('rahpt.module.deactivated', $module);
-        }
+
+        \CodeIgniter\Events\Events::trigger('rahpt.module.deactivated', $module);
     }
 
     /**
@@ -168,7 +162,7 @@ class ModuleRegistry
     {
         $central = $this->all();
         $available = $this->getAvailableModules();
-        
+
         $result = [];
         foreach ($available as $slug => $data) {
             $result[$slug] = [
@@ -178,7 +172,7 @@ class ModuleRegistry
                 'activated_at' => $central[$slug]['activated_at'] ?? null,
             ];
         }
-        
+
         return $result;
     }
 
@@ -192,20 +186,20 @@ class ModuleRegistry
         if (class_exists($class)) {
             $instance = $this->getModuleInstance($class);
             return [
-                'name'    => $instance->name ?? $folder,
-                'label'   => $instance->label ?? $instance->name ?? $folder,
-                'slug'    => $instance->slug ?? strtolower($folder),
+                'name' => $instance->name ?? $folder,
+                'label' => $instance->label ?? $instance->name ?? $folder,
+                'slug' => $instance->slug ?? strtolower($folder),
                 'version' => $instance->version ?? '1.0.0',
-                'theme'   => $instance->theme ?? 'adminlte',
+                'theme' => $instance->theme ?? 'adminlte',
                 'routePrefix' => $instance->routePrefix ?? strtolower($folder),
                 'require' => $instance->require ?? [],
-                'path'    => $this->config->basePath . '/' . $folder
+                'path' => $this->config->basePath . '/' . $folder
             ];
         }
 
         return null;
     }
-    
+
     /**
      * Get cached module instance or create new one
      */
@@ -214,10 +208,10 @@ class ModuleRegistry
         if (!isset(self::$moduleInstances[$class])) {
             self::$moduleInstances[$class] = new $class();
         }
-        
+
         return self::$moduleInstances[$class];
     }
-    
+
     /**
      * Clear module instance cache
      */
