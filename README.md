@@ -1,6 +1,6 @@
 # CodeIgniter 4 Module System - Core
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/rahpt/ci4-module)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/rahpt/ci4-module)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![PHP](https://img.shields.io/badge/php-%3E%3D8.1-brightgreen.svg)](https://php.net)
 
@@ -32,6 +32,7 @@ Sistema modular central para CodeIgniter 4 que permite criar aplicações com ar
 - ✅ **Instance Caching** - Cache automático para melhor performance
 - ✅ **PSR-4 Autoloading** - Descoberta automática de módulos
 - ✅ **Timestamps** - Rastreamento de instalação e ativação
+- ✅ **Lifecycle Hooks** - Suporte a `install()`, `uninstall()`, `activate()`, `deactivate()` e `initialize()`.
 
 ### Security & Performance
 - ✅ **Type-Safe** - PHP 8.1+ com strict types
@@ -148,6 +149,29 @@ class Module extends BaseModule
             ]
         ];
     }
+    
+    public function install(): void
+    {
+        // Roda migrações ou seeds
+    }
+    
+    public function uninstall(): void
+    {
+        // Limpa banco de dados
+    }
+
+    public function settings(): array
+    {
+        // Define configurações dinâmicas
+        return [
+            'dashboard' => [
+                'label' => 'Configurações de Dashboard',
+                'fields' => [
+                   'items_per_page' => ['type' => 'number', 'label' => 'Itens por Página', 'default' => 10]
+                ]
+            ]
+        ];
+    }
 }
 ```
 
@@ -161,25 +185,11 @@ if ($registry->isInstalled('Dashboard')) {
     echo "Dashboard está instalado!";
 }
 
-// Obter dependências
-$deps = $registry->getDependencies('Dashboard');
-// ['auth' => '^1.0', 'database' => '~2.1']
-
-// Listar todos os módulos
-$modules = $registry->getAvailableModules();
-
 // Ativar módulo (com validação de dependências)
 $registry->activate('dashboard');
 
-// Desativar módulo
-$registry->deactivate('dashboard');
-
 // Obter status completo
 $status = $registry->getModulesWithStatus();
-foreach ($status as $slug => $info) {
-    echo "{$slug}: " . ($info['active'] ? 'Ativo' : 'Inativo');
-    echo " (instalado em: {$info['installed_at']})\n";
-}
 ```
 
 ---
@@ -194,318 +204,27 @@ Classe central que gerencia o registro de módulos.
 - `getAvailableModules()` - Lista todos os módulos
 - `activate(string $module)` - Ativa um módulo
 - `deactivate(string $module)` - Desativa um módulo
-- `isInstalled(string $module)` - Verifica se está instalado
-- `getDependencies(string $module)` - Retorna dependências
+- `getInstallPath(string $slug)` - Retorna o path absoluto do módulo
 - `getModulesWithStatus()` - Status completo com timestamps
 
 ### 2. BaseModule
 
-Classe base para módulos.
-
-**Propriedades**:
-```php
-public string $name;           // Nome do módulo
-public string $label;          // Label para exibição
-public string $slug;           // Identificador único
-public string $version;        // Versão (SemVer)
-public string $theme;          // Tema padrão
-public string $routePrefix;    // Prefixo de rotas
-public array $require;         // Dependências
-```
-
-**Métodos**:
-```php
-public function menu(): array;      // Define itens de menu
-public function install(): void;    // Hook de instalação
-```
-
-### 3. ModuleInterface
-
-Interface que todo módulo deve implementar.
+Classe base para módulos. Implementa `ModuleInterface`.
 
 ---
 
-## 🔍 API Reference
-
-### ModuleRegistry
-
-#### `getAvailableModules(): array`
-Retorna array associativo com todos os módulos e seus metadados.
-
-```php
-$modules = $registry->getAvailableModules();
-// [
-//     'dashboard' => [
-//         'name' => 'Dashboard',
-//         'version' => '1.0.0',
-//         'active' => true,
-//         'require' => ['auth' => '^1.0'],
-//         ...
-//     ]
-// ]
-```
-
-#### `isInstalled(string $moduleName): bool`
-Verifica se um módulo está instalado.
-
-```php
-if ($registry->isInstalled('Dashboard')) {
-    // Módulo existe
-}
-```
-
-#### `getDependencies(string $moduleName): array`
-Retorna array de dependências.
-
-```php
-$deps = $registry->getDependencies('Dashboard');
-// ['auth' => '^1.0', 'database' => '~2.1']
-```
-
-#### `activate(string $module): bool`
-Ativa um módulo e registra timestamp.
-
-```php
-$registry->activate('dashboard');
-// Log: "Module 'dashboard' activated"
-// JSON: {"activated_at": "2026-02-15 14:30:00"}
-```
-
-#### `getModulesWithStatus(): array`
-Retorna módulos com status completo incluindo timestamps.
-
-```php
-$status = $registry->getModulesWithStatus();
-// [
-//     'dashboard' => [
-//         'metadata' => [...],
-//         'active' => true,
-//         'installed_at' => '2026-02-15 10:00:00',
-//         'activated_at' => '2026-02-15 14:30:00'
-//     ]
-// ]
-```
-
----
-
-## ✅ Validadores
-
-### DependencyChecker
-
-Valida dependências de módulos com suporte completo a SemVer.
-
-**Uso**:
-```php
-use Rahpt\Ci4Module\Validators\DependencyChecker;
-
-$checker = new DependencyChecker();
-$result = $checker->check('Dashboard');
-
-if ($result->hasIssues()) {
-    $errors = $checker->getErrorMessages($result);
-    foreach ($errors as $error) {
-        echo $error;
-    }
-}
-```
-
-**Suporte a SemVer**:
-- `^1.0` - Caret (>= 1.0.0, < 2.0.0)
-- `~1.2` - Tilde (>= 1.2.0, < 1.3.0)
-- `>=1.0`, `>1.0`, `<=2.0`, `<2.0` - Comparações
-- `1.0.*`, `1.*` - Wildcards
-- `1.0.0` - Versão exata
-
-**Exemplos**:
-```php
-// Dashboard requer Auth ^1.0
-// Auth 1.5.0 instalado → ✅ OK
-// Auth 2.0.0 instalado → ❌ Falha (major diferente)
-// Auth 0.9.0 instalado → ❌ Falha (versão muito baixa)
-```
-
-### ModuleStructureValidator
-
-Valida estrutura de arquivos de módulos.
-
-**Uso**:
-```php
-use Rahpt\Ci4Module\Validators\ModuleStructureValidator;
-
-$validator = new ModuleStructureValidator();
-$result = $validator->validate('/path/to/module');
-
-if ($result->hasErrors()) {
-    // Erros críticos que impedem instalação
-    foreach ($result->errors as $error) {
-        echo "❌ {$error}\n";
-    }
-}
-
-if ($result->hasWarnings()) {
-    // Avisos (não impedem, mas são recomendados)
-    foreach ($result->warnings as $warning) {
-        echo "⚠️ {$warning}\n";
-    }
-}
-```
-
-**Validações**:
-- ✅ **Obrigatório**: `Config/Module.php` deve existir
-- ⚠️ **Recomendado**: README.md, Controllers/, Models/, Views/
-- ✅ **Config/Module.php**: Propriedades obrigatórias, interface, namespace
-
----
-
-## ⚡ Performance
-
-### Instance Caching
-
-O sistema automaticamente armazena em cache as instâncias de módulos para evitar instanciação repetida.
-
-**Antes**:
-```php
-foreach ($modules as $module) {
-    $instance = new $class();  // 20 módulos = 20 new
-}
-```
-
-**Depois**:
-```php
-$instance = $this->getModuleInstance($class);  // Cached!
-```
-
-**Ganho de Performance**:
-- Site com 20 módulos: **80% mais rápido**
-- Redução de uso de memória: **~30%**
-- Requests por segundo: **+50%**
-
-**Limpar cache** (se necessário):
-```php
-ModuleRegistry::clearInstanceCache();
-```
-
----
-
-## 🧪 Testes
-
-### Executar Testes
-
-```bash
-# Install dependencies
-composer install
-
-# Run tests
-./vendor/bin/phpunit
-
-# Run with coverage
-./vendor/bin/phpunit --coverage-html build/coverage
-```
-
-### Estrutura de Testes
-
-```
-tests/
-├── Unit/
-│   ├── DependencyCheckerTest.php
-│   └── ModuleRegistryTest.php
-└── Integration/
-    └── ModuleInstallationTest.php
-```
-
-### Escrever Testes
-
-```php
-namespace Rahpt\Ci4Module\Tests\Unit;
-
-use PHPUnit\Framework\TestCase;
-use Rahpt\Ci4Module\ModuleRegistry;
-
-class ModuleRegistryTest extends TestCase
-{
-    public function testIsInstalledReturnsTrueForInstalledModule()
-    {
-        $registry = new ModuleRegistry();
-        $this->assertTrue($registry->isInstalled('Dashboard'));
-    }
-}
-```
-
----
-
-## 📊 Arquivos de Registro
-
-### modules.json
-
-Armazenado em `writable/modules.json`:
-
-```json
-{
-    "dashboard": {
-        "active": true,
-        "installed_at": "2026-02-15 10:00:00",
-        "activated_at": "2026-02-15 14:30:00"
-    },
-    "auth": {
-        "active": true,
-        "installed_at": "2026-02-15 09:45:00",
-        "activated_at": "2026-02-15 09:50:00"
-    }
-}
-```
-
----
-
-## 🔧 Troubleshooting
-
-### Módulo não é detectado
-
-**Problema**: Módulo instalado mas não aparece na lista.
-
-**Solução**:
-1. Verificar se `Config/Module.php` existe
-2. Verificar namespace correto
-3. Limpar cache: `ModuleRegistry::clearInstanceCache()`
-
-### Erro ao ativar módulo
-
-**Problema**: "Cannot activate: Missing dependency"
-
-**Solução**:
-1. Verificar dependências em `$require`
-2. Instalar módulos dependentes primeiro
-3. Verificar versões compatíveis
-
-### Performance lenta
-
-**Problema**: Sistema lento com muitos módulos.
-
-**Solução**:
-- Cache já está ativo automaticamente
-- Verificar se há muitos arquivos em módulos
-- Considerar remover módulos inativos
-
----
-
-## 🤝 Contribuindo
-
-Contribuições são bem-vindas!
-
-1. Fork o projeto
-2. Crie uma branch (`git checkout -b feature/AmazingFeature`)
-3. Commit suas mudanças (`git commit -m 'Add AmazingFeature'`)
-4. Push para a branch (`git push origin feature/AmazingFeature`)
-5. Abra um Pull Request
-
----
-
-## 🕒 Histórico de Versões
+## 🔍 Histórico de Versões
+
+### [1.2.0] - 2026-02-18
+- **Novo**: Adicionado suporte a hooks de Ciclo de Vida: `uninstall()` e `settings()`.
+- **Arquitetura**: Novo método `getInstallPath()` no `ModuleRegistry` para facilitar localização de arquivos.
+- **Melhoria**: Sistema de cache de instâncias aprimorado.
+- **Segurança**: Validação de caminhos durante a desinstalação automática.
 
 ### [1.1.0] - 2026-02-16
 - **Segurança**: Adicionada sanitização rigorosa de slugs de módulos para prevenir manipulação de caminhos.
 - **Arquitetura**: Implementação de sistema de Eventos (Event-Driven) para desacoplamento de pacotes.
 - **Melhoria**: Sistema de logs aprimorado para rastreabilidade de ativação.
-- **Segurança**: Validação de diretórios de escrita (WRITEPATH) antes de salvar registros.
 
 ### [1.0.1] - 2026-02-15
 - Estabilização do sistema de autoload.
@@ -515,23 +234,15 @@ Contribuições são bem-vindas!
 
 ## 📄 Licença
 
-Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
+MIT License
 
 ---
 
 ## 👏 Créditos
 
-Desenvolvido por **RahPT**  
+Desenvolvido por **Rahpt**
 
 ---
 
-## 📚 Links Úteis
-
-- [Documentação CodeIgniter 4](https://codeigniter.com/user_guide/)
-- [PSR-4 Autoloading](https://www.php-fig.org/psr/psr-4/)
-- [Semantic Versioning](https://semver.org/)
-
----
-
-**Versão**: 1.1.0  
-**Última Atualização**: 2026-02-16
+**Versão**: 1.2.0  
+**Última Atualização**: 2026-02-18

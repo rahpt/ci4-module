@@ -92,6 +92,21 @@ class ModuleRegistry
 
         try {
             $this->put($module, $current);
+
+            // Resolve the correct class for the module slug
+            $available = $this->getAvailableModules();
+            if (isset($available[$module])) {
+                $folder = basename($available[$module]['path']);
+                $class = $this->config->baseNamespace . "\\" . ucfirst($folder) . "\\Config\\Module";
+
+                if (class_exists($class)) {
+                    $instance = $this->getModuleInstance($class);
+                    if (method_exists($instance, 'activate')) {
+                        $instance->activate();
+                    }
+                }
+            }
+
             log_message('info', "Module '{$module}' activated");
 
             \CodeIgniter\Events\Events::trigger('rahpt.module.activated', $module);
@@ -106,9 +121,33 @@ class ModuleRegistry
     public function deactivate(string $module): void
     {
         $module = preg_replace('/[^a-zA-Z0-9_\-]/', '', $module);
+
+        // Resolve the correct class for the module slug
+        $available = $this->getAvailableModules();
+        if (isset($available[$module])) {
+            $folder = basename($available[$module]['path']);
+            $class = $this->config->baseNamespace . "\\" . ucfirst($folder) . "\\Config\\Module";
+
+            if (class_exists($class)) {
+                $instance = $this->getModuleInstance($class);
+                if (method_exists($instance, 'deactivate')) {
+                    $instance->deactivate();
+                }
+            }
+        }
+
         $this->put($module, ['active' => false]);
 
         \CodeIgniter\Events\Events::trigger('rahpt.module.deactivated', $module);
+    }
+
+    /**
+     * Check if a module is currently active.
+     */
+    public function isActive(string $module): bool
+    {
+        $all = $this->all();
+        return isset($all[$module]['active']) && $all[$module]['active'] === true;
     }
 
     /**
@@ -213,10 +252,10 @@ class ModuleRegistry
     }
 
     /**
-     * Clear module instance cache
+     * Get the installation path for a module.
      */
-    public static function clearInstanceCache(): void
+    public function getInstallPath(string $slug): string
     {
-        self::$moduleInstances = [];
+        return APPPATH . $this->config->basePath . DIRECTORY_SEPARATOR . ucfirst($slug);
     }
 }
