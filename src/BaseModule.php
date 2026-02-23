@@ -11,6 +11,7 @@ abstract class BaseModule implements ModuleInterface
     public string $version = '1.0.0';
     public string $theme = 'adminlte';
     public string $routePrefix = '';
+    public string $tablePrefix = '';
     public array $require = [];
 
     /**
