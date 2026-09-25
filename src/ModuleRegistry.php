@@ -56,8 +56,8 @@ class ModuleRegistry
 
     public function put(string $module, array $data): void
     {
-        // Sanitize module name
-        $module = preg_replace('/[^a-zA-Z0-9_\-]/', '', $module);
+        // Enforce strict module name format
+        $module = \Rahpt\Ci4Module\Validators\ModuleNameValidator::validate($module);
 
         $fileName = $this->getCentralRegistryPath();
         $all = $this->all();
@@ -75,52 +75,84 @@ class ModuleRegistry
             mkdir($dir, 0755, true);
         }
 
-        file_put_contents($fileName, $json, LOCK_EX);
+        // Atomic write to prevent file corruption in case of concurrency or unexpected termination
+        $this->writeAtomic($fileName, $json);
 
         // Trigger global event for decoupling
         \CodeIgniter\Events\Events::trigger('rahpt.module.changed', $module, $data);
     }
 
+    /**
+     * Atomically writes data to a file using a unique temp file and rename.
+     */
+    protected function writeAtomic(string $fileName, string $content): void
+    {
+        $tempFile = $fileName . '.' . bin2hex(random_bytes(6)) . '.tmp';
+
+        if (file_put_contents($tempFile, $content, LOCK_EX) === false) {
+            throw new \RuntimeException("Failed to write temporary registry file: {$tempFile}");
+        }
+
+        if (!@rename($tempFile, $fileName)) {
+            // Fallback for Windows if target file is locked or cannot be directly overwritten
+            @unlink($fileName);
+            if (!@rename($tempFile, $fileName)) {
+                @unlink($tempFile);
+                throw new \RuntimeException("Failed to atomically replace registry file: {$fileName}");
+            }
+        }
+    }
+
     public function activate(string $module): bool
     {
-        $module = preg_replace('/[^a-zA-Z0-9_\-]/', '', $module);
+        $module = \Rahpt\Ci4Module\Validators\ModuleNameValidator::validate($module);
 
+        $available = $this->getAvailableModules();
+        if (!isset($available[$module])) {
+            log_message('error', "Cannot activate unknown module '{$module}'");
+            return false;
+        }
+
+        $folder = basename($available[$module]['path']);
+        $class = $this->config->baseNamespace . "\\" . ucfirst($folder) . "\\Config\\Module";
+
+        // 1. Run module activation hook BEFORE updating persistent state (transactional consistency)
+        if (class_exists($class)) {
+            try {
+                $instance = $this->getModuleInstance($class);
+                if (method_exists($instance, 'activate')) {
+                    $instance->activate();
+                }
+            } catch (\Throwable $e) {
+                log_message('error', "Activation hook failed for module '{$module}': " . $e->getMessage());
+                \CodeIgniter\Events\Events::trigger('rahpt.module.activation_failed', $module, $e);
+                return false;
+            }
+        }
+
+        // 2. Persist state only after activation hook succeeds
         $data = $this->all();
         $current = $data[$module] ?? [];
         $current['active'] = true;
+        $current['status'] = 'active';
         $current['activated_at'] = date('Y-m-d H:i:s');
 
         try {
             $this->put($module, $current);
 
-            // Resolve the correct class for the module slug
-            $available = $this->getAvailableModules();
-            if (isset($available[$module])) {
-                $folder = basename($available[$module]['path']);
-                $class = $this->config->baseNamespace . "\\" . ucfirst($folder) . "\\Config\\Module";
-
-                if (class_exists($class)) {
-                    $instance = $this->getModuleInstance($class);
-                    if (method_exists($instance, 'activate')) {
-                        $instance->activate();
-                    }
-                }
-            }
-
-            log_message('info', "Module '{$module}' activated");
-
+            log_message('info', "Module '{$module}' activated successfully");
             \CodeIgniter\Events\Events::trigger('rahpt.module.activated', $module);
 
             return true;
-        } catch (JsonException $e) {
-            log_message('error', "Failed to activate module '{$module}': " . $e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', "Failed to persist active status for module '{$module}': " . $e->getMessage());
             return false;
         }
     }
 
     public function deactivate(string $module): void
     {
-        $module = preg_replace('/[^a-zA-Z0-9_\-]/', '', $module);
+        $module = \Rahpt\Ci4Module\Validators\ModuleNameValidator::validate($module);
 
         // Resolve the correct class for the module slug
         $available = $this->getAvailableModules();
@@ -136,7 +168,11 @@ class ModuleRegistry
             }
         }
 
-        $this->put($module, ['active' => false]);
+        $this->put($module, [
+            'active' => false,
+            'status' => 'disabled',
+            'deactivated_at' => date('Y-m-d H:i:s'),
+        ]);
 
         \CodeIgniter\Events\Events::trigger('rahpt.module.deactivated', $module);
     }
