@@ -4,10 +4,9 @@ namespace Rahpt\Ci4Module\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Rahpt\Ci4Module\Validators\DependencyChecker;
-use Rahpt\Ci4Module\ModuleRegistry;
 
 /**
- * Tests for DependencyChecker
+ * Tests for DependencyChecker version compatibility logic.
  */
 class DependencyCheckerTest extends TestCase
 {
@@ -16,70 +15,80 @@ class DependencyCheckerTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        // Mock registry would be injected here
-        // $this->checker = new DependencyChecker();
+        // DependencyChecker can be tested without registry for version comparison
+        $this->checker = $this->getMockBuilder(DependencyChecker::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods([])
+            ->getMock();
     }
 
-    public function testCaretVersionCompatibility()
+    public function testCaretVersionCompatibilityPass(): void
     {
-        $this->markTestIncomplete('To be implemented');
-        
-        // Should pass
-        // ^1.0 with 1.5.0 = true
-        // ^1.0 with 2.0.0 = false
-        // ^0.2 with 0.2.5 = true
-        // ^0.2 with 0.3.0 = false
+        $this->assertTrue($this->checker->isVersionCompatible('1.5.0', '^1.0'));
+        $this->assertTrue($this->checker->isVersionCompatible('1.0.0', '^1.0'));
+        $this->assertTrue($this->checker->isVersionCompatible('0.2.5', '^0.2'));
     }
 
-    public function testTildeVersionCompatibility()
+    public function testCaretVersionCompatibilityFail(): void
     {
-        $this->markTestIncomplete('To be implemented');
-        
-        // Should pass
-        // ~1.2 with 1.2.5 = true
-        // ~1.2 with 1.3.0 = false
+        $this->assertFalse($this->checker->isVersionCompatible('2.0.0', '^1.0'));
+        $this->assertFalse($this->checker->isVersionCompatible('0.3.0', '^0.2'));
     }
 
-    public function testComparisonOperators()
+    public function testTildeVersionCompatibilityPass(): void
     {
-        $this->markTestIncomplete('To be implemented');
-        
-        // >= 1.0 with 1.5 = true
-        // > 1.0 with 1.0 = false
-        // <= 2.0 with 1.5 = true
+        $this->assertTrue($this->checker->isVersionCompatible('1.2.5', '~1.2'));
+        $this->assertTrue($this->checker->isVersionCompatible('1.2.0', '~1.2'));
     }
 
-    public function testWildcardVersions()
+    public function testTildeVersionCompatibilityFail(): void
     {
-        $this->markTestIncomplete('To be implemented');
-        
-        // 1.0.* with 1.0.5 = true
-        // 1.0.* with 1.1.0 = false
-        // 1.* with 1.5.0 = true
+        $this->assertFalse($this->checker->isVersionCompatible('1.3.0', '~1.2'));
+        $this->assertFalse($this->checker->isVersionCompatible('2.2.0', '~1.2'));
     }
 
-    public function testMissingDependency()
+    public function testComparisonOperatorsGte(): void
     {
-        $this->markTestIncomplete('To be implemented');
-        
-        // Should detect missing module
-        // $result = $this->checker->check('test-module');
-        // $this->assertFalse($result->success);
+        $this->assertTrue($this->checker->isVersionCompatible('1.5.0', '>=1.0'));
+        $this->assertTrue($this->checker->isVersionCompatible('1.0.0', '>=1.0'));
+        $this->assertFalse($this->checker->isVersionCompatible('0.9.0', '>=1.0'));
     }
 
-    public function testVersionMismatch()
+    public function testComparisonOperatorsGt(): void
     {
-        $this->markTestIncomplete('To be implemented');
-        
-        // Should detect version incompatibility
+        $this->assertTrue($this->checker->isVersionCompatible('1.1.0', '>1.0'));
+        // PHP version_compare: '1.0.0' > '1.0' is TRUE (1.0.0 is treated as greater than 1.0)
+        $this->assertTrue($this->checker->isVersionCompatible('1.0.0', '>1.0'));
+        $this->assertFalse($this->checker->isVersionCompatible('1.0.0', '>1.0.0'));
     }
 
-    public function testAllDependenciesSatisfied()
+    public function testComparisonOperatorsLte(): void
     {
-        $this->markTestIncomplete('To be implemented');
-        
-        // Should pass when all deps are met
-        // $result = $this->checker->check('test-module');
-        // $this->assertTrue($result->success);
+        $this->assertTrue($this->checker->isVersionCompatible('1.5.0', '<=2.0'));
+        // PHP: version_compare('2.0.0', '2.0', '<=') is FALSE — 2.0.0 is treated as > 2.0
+        $this->assertTrue($this->checker->isVersionCompatible('2.0.0', '<=2.0.0'));
+        $this->assertFalse($this->checker->isVersionCompatible('2.1.0', '<=2.0.0'));
+        $this->assertFalse($this->checker->isVersionCompatible('2.0.0', '<=2.0'));
+    }
+
+    public function testWildcardVersionPass(): void
+    {
+        $this->assertTrue($this->checker->isVersionCompatible('1.0.5', '1.0.*'));
+        $this->assertTrue($this->checker->isVersionCompatible('1.5.0', '1.*'));
+    }
+
+    public function testWildcardVersionFail(): void
+    {
+        $this->assertFalse($this->checker->isVersionCompatible('1.1.0', '1.0.*'));
+    }
+
+    public function testStarWildcardAlwaysMatches(): void
+    {
+        $this->assertTrue($this->checker->isVersionCompatible('99.99.99', '*'));
+    }
+
+    public function testEmptyRequirementAlwaysMatches(): void
+    {
+        $this->assertTrue($this->checker->isVersionCompatible('1.0.0', ''));
     }
 }

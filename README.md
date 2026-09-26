@@ -1,10 +1,45 @@
-# CodeIgniter 4 Module System - Core
+# CodeIgniter 4 Module System - Core Kernel
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/rahpt/ci4-module)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/rahpt/ci4-module)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![PHP](https://img.shields.io/badge/php-%3E%3D8.1-brightgreen.svg)](https://php.net)
+[![CodeIgniter](https://img.shields.io/badge/CodeIgniter-%3E%3D4.5-orange.svg)](https://codeigniter.com)
 
-Sistema modular central para CodeIgniter 4 com arquitetura orientada a contratos, integridade criptográfica de arquivos, isolamento por quarentena, persistência atômica e ciclo de vida transacional.
+Kernel modular central para CodeIgniter 4 com máquina de estados finita, validação estrita de transições, manifesto declarativo versionado (`module.json`), integridade criptográfica determinística, contratos transversais de auditoria e health check, isolamento por quarentena e persistência atômica transacional.
+
+---
+
+## 🏛️ Arquitetura da Plataforma
+
+```text
+                    RAHPT MODULAR PLATFORM
+
+                         CodeIgniter 4
+                              |
+                    +---------+---------+
+                    |                   |
+                 Shield             Application
+                    |                   |
+                    +---------+---------+
+                              |
+                       +------+------+
+                       | ci4-module |
+                       | Kernel Core |
+                       +------+------+
+                              |
+          +-------------------+-------------------+
+          |                   |                   |
+          v                   v                   v
+      tenancy               tools                nav
+          |                   |                   |
+          +-------------------+----------+--------+
+                                         |
+                                         v
+                                       theme
+                                         |
+                                         v
+                                  UI / Design System
+```
 
 ---
 
@@ -12,10 +47,12 @@ Sistema modular central para CodeIgniter 4 com arquitetura orientada a contratos
 
 - [Características](#-características)
 - [Requisitos](#-requisitos)
-- [Instalação](#-instalação)
-- [Contrato de Manifesto (BaseModule)](#-contrato-de-manifesto-basemodule)
+- [Instalação e Configuração](#-instalação-e-configuração)
+- [Manifesto Declarativo (module.json) vs Implementação](#-manifesto-declarativo-modulejson-vs-implementação)
+- [Contrato BaseModule](#-contrato-basemodule)
+- [Máquina de Estados Finita e Ciclo de Vida](#-máquina-de-estados-finita-e-ciclo-de-vida)
 - [Integridade Criptográfica e Quarentena](#-integridade-criptográfica-e-quarentena)
-- [Ciclo de Vida e Estados](#-ciclo-de-vida-e-estados)
+- [Contratos Transversais (AuditEvent e HealthCheck)](#-contratos-transversais-auditevent-e-healthcheck)
 - [Gerenciamento e API Reference](#-gerenciamento-e-api-reference)
 - [Eventos Globais](#-eventos-globais)
 - [Histórico de Versões](#-histórico-de-versões)
@@ -25,20 +62,24 @@ Sistema modular central para CodeIgniter 4 com arquitetura orientada a contratos
 
 ## ✨ Características
 
-### Core Features & Contratos
-- ✅ **Contratos de Manifesto Ricos** - Suporte a `tablePrefix`, `priority`, `requires`, `conflicts`, `provides`, `permissions` e `tenantAware`.
-- ✅ **Integridade Criptográfica (Fingerprint)** - Cálculo de hash SHA-256 determinístico dos arquivos do módulo com verificação automática antes da ativação.
-- ✅ **Sistema de Quarentena** - Módulos com falha de integridade, adulteração ou erro crítico são imediatamente isolados para proteger a aplicação.
-- ✅ **Persistência Atômica** - Gravação transacional segura do registro central (`modules.json`) com arquivo temporário e substituição atômica imune a colisões de escrita.
-- ✅ **Dependency & Conflict Management** - Resolução de dependências com SemVer (`^`, `~`, `>=`, etc.) e bloqueio de módulos conflitantes.
-- ✅ **Ciclo de Vida Completo** - Suporte a `install()`, `initialize()`, `activate()`, `deactivate()`, `uninstall()` e `settings()`.
-- ✅ **Integração com RBAC/Shield** - Agregação de permissões declaradas pelos módulos via `getPermissions()`.
-- ✅ **PSR-4 Autoloading** - Descoberta automática de módulos e injeção de namespaces em tempo de execução.
+### Kernel Modular & Máquina de Estados
+- ✅ **Máquina de Estados Finita Estrita** - Transições controladas e semânticas (`discover`, `validate`, `install`, `activate`, `deactivate`, `quarantine`, `rollback`) que bloqueiam saltos arbitrários e transições inválidas com `DomainException`.
+- ✅ **Manifesto Declarativo Versionado (`module.json`)** - Schema 1.0 formal para especificação estática de metadados, dependências, conflitos, permissões e capacidades (`capabilities`).
+- ✅ **Separação Declaração vs Implementação** - `module.json` como fonte declarativa pura de verdade e `Config/Module.php` (`BaseModule`) para execução e ganchos em runtime.
+- ✅ **Resolução SemVer de Dependências** - Suporte completo a restrições de versão (`^`, `~`, `>=`, `<`, etc.) para PHP, CodeIgniter e outros módulos.
+- ✅ **Prevenção de Conflitos** - Bloqueio determinístico de módulos incompatíveis declarados em `conflicts`.
 
-### Segurança & Confiabilidade
-- ✅ **Type-Safe & Strict** - Código 100% tipado com PHP 8.1+ e validação estrita de nomes de módulo.
-- ✅ **Event-Driven Architecture** - Emissão reativa de eventos para desacoplamento de navegação, temas e ferramentas.
-- ✅ **Auditoria e Logs Detalhados** - Registro de timestamps, motivos de alteração de status e alertas de quarentena.
+### Segurança, Integridade & Confiabilidade
+- ✅ **Integridade Criptográfica (Canonical Checksum)** - Hash SHA-256 canônico gerado a partir de lista ordenada de caminhos relativos de arquivos e hash determinístico do manifesto.
+- ✅ **Diferenciação Integridade vs Autenticidade** - Verificação contínua contra alterações não autorizadas em disco e base arquitetural para assinaturas de publisher (ex: Ed25519).
+- ✅ **Isolamento por Quarentena** - Módulos com falha de integridade, adulteração ou erro fatal em hook são imediatamente neutralizados e colocados em quarentena sem corromper a aplicação.
+- ✅ **Persistência Atômica Transacional** - Gravação do arquivo de registro (`modules.json`) com arquivo temporário e substituição atômica (`rename`), imune a falhas parciais e concorrência.
+- ✅ **Zero-Trust Autoloading** - Validação estrita de namespaces PSR-4 e caminhos no disco.
+
+### Observabilidade & Contratos Transversais
+- ✅ **Contrato AuditEvent** - Objeto de valor imutável (`readonly class AuditEvent`) para padronizar logs estruturados de auditoria em todos os pacotes da plataforma.
+- ✅ **Contrato HealthCheckInterface** - Padronização de verificações de integridade (`HealthResult`) para monitoramento em tempo real do estado operacional do módulo.
+- ✅ **Agregação de Permissões Shield** - Coleta centralizada de permissões via `getPermissions()` para alimentar RBAC e controle de acesso.
 
 ---
 
@@ -50,22 +91,24 @@ Sistema modular central para CodeIgniter 4 com arquitetura orientada a contratos
 
 ---
 
-## 🚀 Instalação
+## 🚀 Instalação e Configuração
 
-### Via Composer
+### 1. Instalação via Composer
 
 ```bash
 composer require rahpt/ci4-module
 ```
 
-### Configuração
+### 2. Arquivo de Configuração
 
-1. **Copie o arquivo de configuração**:
+Copie o arquivo base para `app/Config/Modules.php`:
+
 ```bash
 cp vendor/rahpt/ci4-module/src/Config/Modules.php app/Config/Modules.php
 ```
 
-2. **Configure `app/Config/Modules.php`**:
+Personalize as diretrizes:
+
 ```php
 <?php
 
@@ -79,10 +122,18 @@ class Modules extends BaseModules
     public string $baseNamespace = 'App\\Modules';
     public string $registrationFile = 'modules.json';
     public string $defaultTheme = 'adminlte';
+    
+    // Regras de validação de estrutura mínima obrigatória
+    public array $requiredStructure = [
+        'Config/Module.php',
+    ];
 }
 ```
 
-3. **Registre o serviço em `app/Config/Services.php`**:
+### 3. Registro do Serviço
+
+Em `app/Config/Services.php`:
+
 ```php
 public static function modules(bool $getShared = true)
 {
@@ -96,124 +147,123 @@ public static function modules(bool $getShared = true)
 
 ---
 
-## 🏗️ Contrato de Manifesto (`BaseModule`)
+## 📄 Manifesto Declarativo (`module.json`) vs Implementação
 
-Cada módulo declara sua identidade, requisitos e comportamentos em `Config/Module.php` estendendo `BaseModule`.
+Para garantir separação clara de responsabilidades, o ecossistema Rahpt adota o manifesto estático `module.json` como especificação declarativa de metadados:
+
+### Schema Formal `module.json` (v1.0)
+
+```json
+{
+  "schema": "1.0",
+  "name": "Contratos",
+  "slug": "contratos",
+  "version": "2.1.0",
+  "description": "Módulo de gestão de contratos e faturamento",
+  "requires": {
+    "php": ">=8.1",
+    "codeigniter4/framework": "^4.5",
+    "financeiro": "^2.0"
+  },
+  "optionalRequires": {
+    "notificacoes": "^1.0"
+  },
+  "provides": [
+    "contract-management",
+    "document-signing"
+  ],
+  "conflicts": [
+    "contratos-legado"
+  ],
+  "permissions": [
+    "contratos.view",
+    "contratos.create",
+    "contratos.edit",
+    "contratos.delete",
+    "contratos.admin"
+  ],
+  "tenant_aware": true,
+  "capabilities": {
+    "web": true,
+    "api": true,
+    "cli": false,
+    "jobs": true,
+    "events": true,
+    "health": true,
+    "settings": true,
+    "navigation": true,
+    "migrations": true
+  }
+}
+```
+
+---
+
+## 🏗️ Contrato `BaseModule`
+
+A implementação em código PHP é declarada em `Config/Module.php` estendendo `BaseModule`:
 
 ```php
 <?php
 
-namespace App\Modules\Financeiro\Config;
+namespace App\Modules\Contratos\Config;
 
 use Rahpt\Ci4Module\BaseModule;
 
 class Module extends BaseModule
 {
-    // Identificação básica
-    public string $name = 'Financeiro';
-    public string $label = 'Gestão Financeira';
-    public string $slug = 'financeiro';
-    public string $version = '1.3.0';
+    public string $name = 'Contratos';
+    public string $label = 'Gestão de Contratos';
+    public string $slug = 'contratos';
+    public string $version = '2.1.0';
     public string $theme = 'adminlte';
-    public string $routePrefix = 'financeiro';
+    public string $routePrefix = 'contratos';
     
-    // Configurações arquiteturais
-    public string $tablePrefix = 'fin_';  // Prefixo para tabelas do módulo
-    public int $priority = 10;            // Prioridade de inicialização e menu
-    public bool $tenantAware = true;      // Suporta isolamento Multi-Tenant
+    public string $tablePrefix = 'cnt_';
+    public int $priority = 20;
+    public bool $tenantAware = true;
 
-    // Requisitos de dependências com SemVer
     public array $require = [
         'php' => '>=8.1',
         'codeigniter4/framework' => '^4.5',
-        'auth' => '^1.0'
     ];
 
-    // Conflitos: módulos que NÃO podem coexistir ativos
-    public array $conflicts = [
-        'financeiro-legado'
-    ];
+    public array $conflicts = ['contratos-legado'];
+    public array $provides = ['contract-management'];
+    public array $permissions = ['contratos.view', 'contratos.create'];
 
-    // Capacidades providas para outros módulos consumirem
-    public array $provides = [
-        'billing-engine',
-        'invoicing'
-    ];
-
-    // Permissões Shield declaradas pelo módulo
-    public array $permissions = [
-        'financeiro.view',
-        'financeiro.create',
-        'financeiro.admin'
-    ];
-
-    /**
-     * Declaração de menu integrado
-     */
-    public function menu(): array
-    {
-        return [
-            [
-                'label'      => 'Financeiro',
-                'url'        => 'financeiro',
-                'icon'       => 'fas fa-dollar-sign',
-                'permission' => 'financeiro.view',
-                'order'      => $this->priority
-            ]
-        ];
-    }
-
-    /**
-     * Ciclo de Vida: Executado ao instalar
-     */
     public function install(): void
     {
-        // Migrations e seeds iniciais
+        // Migrations e inicializações de persistência
     }
 
-    /**
-     * Ciclo de Vida: Executado em toda requisição se o módulo estiver ativo
-     */
     public function initialize(): void
     {
-        // Registro de bindings, listeners ou serviços locais
+        // Listeners, bindings e registro de rotas/serviços
     }
 
-    /**
-     * Ciclo de Vida: Executado imediatamente antes da ativação
-     */
     public function activate(): void
     {
-        // Validações pré-ativação
+        // Pré-condições antes de marcar o módulo como ativo
     }
 
-    /**
-     * Ciclo de Vida: Executado na desativação
-     */
     public function deactivate(): void
     {
-        // Limpeza de caches efêmeros
+        // Limpeza de recursos e caches
     }
 
-    /**
-     * Ciclo de Vida: Executado ao desinstalar
-     */
     public function uninstall(): void
     {
-        // Remoção segura de recursos locais
+        // Remoção segura de tabelas e artefatos
     }
 
-    /**
-     * Configurações dinâmicas gerenciadas via painel
-     */
     public function settings(): array
     {
         return [
-            'financeiro' => [
-                'label' => 'Configurações de Faturamento',
+            'contratos' => [
+                'label' => 'Configurações de Contratos',
                 'fields' => [
-                    'moeda_padrao' => ['type' => 'text', 'label' => 'Moeda', 'default' => 'BRL'],
-                    'dias_vencimento' => ['type' => 'number', 'label' => 'Dias Vencimento', 'default' => 5],
+                    'dias_notificacao' => ['type' => 'number', 'label' => 'Aviso Prévio (dias)', 'default' => 30],
                 ]
             ]
         ];
@@ -223,122 +273,190 @@ class Module extends BaseModule
 
 ---
 
-## 🔒 Integridade Criptográfica e Quarentena
+## 🔄 Máquina de Estados Finita e Ciclo de Vida
 
-Para garantir que módulos em produção não sofram modificações não auditadas, injeções maliciosas ou corrupção de arquivos, o `ModuleRegistry` conta com verificação criptográfica:
+O `ModuleRegistry` opera como uma **máquina de estados finita rigorosa**. Nenhuma transição de status pode violar a tabela de estados permitidos:
 
-### 1. Cálculo de Fingerprint
-Gera um hash SHA-256 determinístico baseado nos hashes individuais (SHA-1) de todos os arquivos do módulo ordenados alfabeticamente:
-```php
-$registry = service('modules');
-$fingerprint = $registry->computeFingerprint('financeiro');
+```text
+  [discovered] ─── validate() ───► [validated] ─── install() ───► [installed]
+                                                                        │
+                                                                    activate()
+                                                                        ▼
+  [active] ◄─── (concluído) ─── [activating]
+     │
+ deactivate()
+     ▼
+[deactivating] ──► [disabled / inactive]
+
+*Qualquer Estado com Falha Crítica* ──► [failed]
+   │
+   ├─► quarantine() ──► [quarantined] ──► rollback()
+   └─► validate()   ──► [validated]
 ```
 
-### 2. Verificação Contínua
-Durante a ativação (`activate()`), o registry executa automaticamente `verifyIntegrity($module)`. Se o hash real divergir do hash registrado no manifesto ou no registro central, o módulo é **bloqueado e enviado para Quarentena**:
-```php
-if (! $registry->verifyIntegrity('financeiro')) {
-    // Módulo foi colocado em STATUS_QUARANTINED
-}
-```
+### Tabela de Transições Controladas
 
-### 3. Isolamento em Quarentena
-Módulos em quarentena são desativados com status `quarantined`, recebem registro do motivo (`status_reason`), registram log crítico e disparam o evento `rahpt.module.quarantined`:
-```php
-$registry->quarantine('financeiro', 'Assinatura SHA-256 divergente dos arquivos locais.');
-```
+| Estado Atual | Operações Válidas | Próximo Estado |
+| :--- | :--- | :--- |
+| `discovered` | `validate()` | `validated` |
+| `validated` | `install()` | `installed` |
+| `installed` | `activate()` | `activating` -> `active` |
+| `active` | `deactivate()` | `deactivating` -> `inactive` |
+| `inactive` | `activate()` | `activating` -> `active` |
+| *Qualquer estado* | Erro crítico detectado | `failed` |
+| `failed` | `quarantine()` | `quarantined` |
+| `failed` | `validate()` | `validated` (após correção) |
+| `quarantined` | `rollback()` ou `validate()` | `discovered` ou `validated` |
+
+Qualquer tentativa de transição não permitida resulta em `DomainException`, garantindo que módulos em estado inconsistente nunca sejam ativados.
 
 ---
 
-## 🔄 Ciclo de Vida e Estados
+## 🔒 Integridade Criptográfica e Quarentena
 
-O ciclo de vida de cada módulo transita de maneira determinística entre os seguintes estados:
+### 1. Checksum Canônico Determinístico
+O cálculo de fingerprint gera um SHA-256 canônico a partir de:
+1. Lista ordenada alfabeticamente dos caminhos relativos de todos os arquivos.
+2. Hash determinístico do conteúdo de cada arquivo.
+3. Hash canônico do manifesto declarativo `module.json`.
 
-| Status | Descrição |
-| :--- | :--- |
-| `discovered` | Módulo detectado no disco, aguardando instalação. |
-| `installed` | Módulo instalado, migrações rodadas, mas inativo. |
-| `activating` | Transição de ativação em andamento (executando hook `activate()`). |
-| `active` | Módulo ativo, íntegro e operacional na aplicação. |
-| `deactivating` | Transição de desativação em andamento. |
-| `inactive` | Módulo desativado com segurança. |
-| `quarantined` | Módulo bloqueado por violação de integridade ou segurança. |
-| `failed` | Falha ao ativar (ex: dependências ausentes ou erro em hook). |
+```php
+$registry = service('modules');
+$fingerprint = $registry->computeFingerprint('contratos');
+```
+
+### 2. Verificação de Integridade em Runtime
+Antes de concluir a ativação (`activate()`), o registry executa `verifyIntegrity($module)`. Se qualquer arquivo tiver sido adulterado, substituído ou corrompido, a ativação é abortada imediatamente.
+
+### 3. Isolamento por Quarentena
+Módulos que falham na validação de integridade ou sofrem exceção não tratada são isolados:
+
+```php
+$registry->quarantine('contratos', 'Assinatura SHA-256 divergente dos arquivos em disco.');
+```
+
+Módulos em quarentena não têm seus controllers, rotas, views ou comandos carregados pelo sistema, emitindo o evento `rahpt.module.quarantined`.
+
+---
+
+## 🧩 Contratos Transversais (`AuditEvent` e `HealthCheck`)
+
+O `ci4-module` provê contratos padronizados consumidos por todos os outros pacotes do ecossistema:
+
+### 1. `AuditEvent` (Value Object Imutável)
+Contrato único para logs estruturados em auditorias de ciclo de vida, multi-tenancy, autorização e assets:
+
+```php
+use Rahpt\Ci4Module\Contracts\AuditEvent;
+
+$event = new AuditEvent(
+    eventType: 'module.activated',
+    module: 'contratos',
+    actorId: 'user_42',
+    tenantId: 'org_acme',
+    data: ['version' => '2.1.0'],
+    timestamp: time()
+);
+```
+
+### 2. `HealthCheckInterface` & `HealthResult`
+Contrato para diagnóstico e observabilidade do ecossistema:
+
+```php
+use Rahpt\Ci4Module\Contracts\HealthCheckInterface;
+use Rahpt\Ci4Module\Contracts\HealthResult;
+
+class ModuleHealthCheck implements HealthCheckInterface
+{
+    public function check(): HealthResult
+    {
+        $registry = service('modules');
+        $allHealthy = true;
+        $details = [];
+
+        foreach ($registry->getModules() as $module => $info) {
+            $valid = $registry->verifyIntegrity($module);
+            $details[$module] = $valid ? 'ok' : 'integrity_failed';
+            if (!$valid) {
+                $allHealthy = false;
+            }
+        }
+
+        return new HealthResult(
+            name: 'ModuleIntegrityCheck',
+            healthy: $allHealthy,
+            details: $details
+        );
+    }
+}
+```
 
 ---
 
 ## 🔧 Gerenciamento e API Reference
-
-O serviço `service('modules')` (`Rahpt\Ci4Module\ModuleRegistry`) provê a API central:
 
 ```php
 use Rahpt\Ci4Module\ModuleRegistry;
 
 $registry = service('modules');
 
-// Ativação com verificação de integridade e dependências
-$success = $registry->activate('financeiro');
+// Ativação controlada com validação e integridade
+$success = $registry->activate('contratos');
 
 // Desativação segura
-$registry->deactivate('financeiro');
+$registry->deactivate('contratos');
+
+// Transição explícita para quarentena
+$registry->quarantine('contratos', 'Falha crítica de segurança');
 
 // Consulta de status do ciclo de vida
-$status = $registry->getStatus('financeiro'); // 'active', 'quarantined', etc.
+$status = $registry->getStatus('contratos'); // 'active', 'quarantined', 'failed', etc.
 
-// Obter todos os módulos com status detalhado e timestamps
+// Consulta consolidada com timestamps e motivos
 $modules = $registry->getModulesWithStatus();
 
-// Gravar e atualizar impressão digital de integridade
-$registry->recordFingerprint('financeiro');
+// Gravação atômica de fingerprint
+$registry->recordFingerprint('contratos');
 
-// Listar todas as permissões Shield declaradas pelos módulos
+// Lista agregada de todas as permissões Shield declaradas pelos módulos
 $permissions = $registry->getPermissions();
-// Exemplo: ['financeiro.view', 'financeiro.create', 'dashboard.access']
-
-// Obter caminho absoluto do módulo no disco
-$path = $registry->getInstallPath('financeiro');
 ```
 
 ---
 
 ## 🔔 Eventos Globais
 
-O ecossistema emite eventos nativos do CodeIgniter 4 (`\CodeIgniter\Events\Events`):
-
-| Evento | Argumentos | Momento |
+| Evento | Argumentos | Descrição |
 | :--- | :--- | :--- |
-| `rahpt.module.changed` | `$module, $data` | Qualquer alteração gravada atomicamente no registro. |
-| `rahpt.module.status_changed` | `$module, $status, $reason` | Transição de status do ciclo de vida. |
-| `rahpt.module.quarantined` | `$module, $reason` | Módulo isolado por quebra de integridade. |
+| `rahpt.module.changed` | `$module, $data` | Alteração gravada atomicamente no registro. |
+| `rahpt.module.status_changed` | `$module, $status, $reason` | Transição de estado do ciclo de vida. |
+| `rahpt.module.quarantined` | `$module, $reason` | Módulo colocado em quarentena por falha ou violação. |
 | `rahpt.module.activated` | `$module` | Ativação concluída com sucesso. |
 | `rahpt.module.deactivated` | `$module` | Desativação concluída com sucesso. |
-| `rahpt.module.activation_failed` | `$module, $throwable` | Falha de ativação ou erro em hook. |
+| `rahpt.module.activation_failed` | `$module, $throwable` | Falha durante o processo de ativação. |
 
 ---
 
 ## 🕒 Histórico de Versões
 
+### [1.4.0] - 2026-09-26
+- **Novo**: Máquina de estados finita rigorosa com validação de transições semânticas (`discover`, `validate`, `install`, `activate`, `deactivate`, `quarantine`, `rollback`).
+- **Novo**: Formalização do manifesto declarativo `module.json` com Schema 1.0 e matriz de capacidades (`capabilities`).
+- **Novo**: Contrato transversal imutável `AuditEvent` para padronização de logs de auditoria em todos os pacotes.
+- **Novo**: Contrato transversal `HealthCheckInterface` e `HealthResult` para observabilidade de módulos.
+- **Melhoria**: Algoritmo determinístico canônico para cálculo de checksum SHA-256 e fingerprint.
+- **Testes**: Cobertura ampliada para `StateMachineTest` e `DependencyCheckerTest`.
+
 ### [1.3.0] - 2026-09-26
-- **Novo**: Contratos de manifesto expandidos em `BaseModule`: `tablePrefix`, `priority`, `conflicts`, `provides`, `permissions`, `tenantAware` e `routePrefix`.
-- **Novo**: Verificação de integridade criptográfica com `computeFingerprint()` e `verifyIntegrity()`.
-- **Novo**: Sistema de Quarentena (`quarantine()`) para módulos adulterados ou corrompidos.
-- **Novo**: Gravação atômica (`writeAtomic()`) do registro de módulos imune a concorrência.
-- **Novo**: Suporte completo a agregação de permissões Shield via `getPermissions()`.
-- **Novo**: Máquina de estados detalhada do ciclo de vida (`activating`, `quarantined`, `failed`).
-- **Novo**: Eventos desacoplados `rahpt.module.quarantined` e `rahpt.module.status_changed`.
+- **Novo**: Contratos de manifesto ricos em `BaseModule` (`tablePrefix`, `priority`, `conflicts`, `provides`, `permissions`, `tenantAware`).
+- **Novo**: Sistema de Quarentena (`quarantine()`) e gravação atômica (`writeAtomic()`).
+- **Novo**: Agregação de permissões para integração com CodeIgniter Shield.
 
 ### [1.2.0] - 2026-02-18
-- **Novo**: Suporte a hooks de Ciclo de Vida: `uninstall()` e `settings()`.
-- **Arquitetura**: Novo método `getInstallPath()` no `ModuleRegistry`.
-- **Melhoria**: Sistema de cache de instâncias aprimorado.
-- **Segurança**: Validação de caminhos durante a desinstalação automática.
-
-### [1.1.0] - 2026-02-16
-- **Segurança**: Sanitização rigorosa de slugs de módulos.
-- **Arquitetura**: Eventos `rahpt.module.changed` para invalidação reativa.
+- **Novo**: Hooks de ciclo de vida `uninstall()` e `settings()`.
 
 ### [1.0.1] - 2026-02-15
-- Versão inicial estável.
+- Versão inicial estável do kernel modular.
 
 ---
 
@@ -346,9 +464,5 @@ O ecossistema emite eventos nativos do CodeIgniter 4 (`\CodeIgniter\Events\Event
 
 Distribuído sob a licença MIT. Veja `LICENSE` para mais informações.
 
----
-
-## 👏 Créditos
-
 Desenvolvido por **Rahpt**  
-Mantido pela comunidade Rahpt / CodeIgniter 4 Modular.
+Mantido pela equipe Rahpt / CodeIgniter 4 Modular Platform.

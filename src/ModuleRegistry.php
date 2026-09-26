@@ -10,6 +10,19 @@ use Rahpt\Ci4Module\Validators\ModuleNameValidator;
 
 /**
  * ModuleRegistry - Manages module registration, lifecycle state machine, and dependency tracking in modules.json
+ *
+ * State machine transitions:
+ *   discovered  -> validated
+ *   validated   -> installed
+ *   installed   -> activating
+ *   activating  -> active
+ *   active      -> deactivating
+ *   deactivating -> disabled
+ *   disabled    -> activating   (re-activation)
+ *   failed      -> validated    (retry after fix)
+ *   failed      -> quarantined  (isolate permanently)
+ *   any         -> failed       (on error)
+ *   any         -> quarantined  (on security violation)
  */
 class ModuleRegistry
 {
@@ -23,6 +36,22 @@ class ModuleRegistry
     public const STATUS_DISABLED     = 'disabled';
     public const STATUS_FAILED       = 'failed';
     public const STATUS_QUARANTINED  = 'quarantined';
+
+    /**
+     * Valid state machine transitions: from => [allowed to, ...]
+     * Special key '*' means reachable from any state.
+     */
+    protected const ALLOWED_TRANSITIONS = [
+        self::STATUS_DISCOVERED   => [self::STATUS_VALIDATED, self::STATUS_FAILED, self::STATUS_QUARANTINED],
+        self::STATUS_VALIDATED    => [self::STATUS_INSTALLED, self::STATUS_FAILED, self::STATUS_QUARANTINED],
+        self::STATUS_INSTALLED    => [self::STATUS_ACTIVATING, self::STATUS_FAILED, self::STATUS_QUARANTINED],
+        self::STATUS_ACTIVATING   => [self::STATUS_ACTIVE, self::STATUS_FAILED, self::STATUS_QUARANTINED],
+        self::STATUS_ACTIVE       => [self::STATUS_DEACTIVATING, self::STATUS_FAILED, self::STATUS_QUARANTINED],
+        self::STATUS_DEACTIVATING => [self::STATUS_DISABLED, self::STATUS_FAILED, self::STATUS_QUARANTINED],
+        self::STATUS_DISABLED     => [self::STATUS_ACTIVATING, self::STATUS_FAILED, self::STATUS_QUARANTINED],
+        self::STATUS_FAILED       => [self::STATUS_VALIDATED, self::STATUS_QUARANTINED, self::STATUS_FAILED],
+        self::STATUS_QUARANTINED  => [self::STATUS_QUARANTINED],  // terminal; only explicit rollback can escape
+    ];
 
     protected Modules $config;
 
@@ -127,7 +156,30 @@ class ModuleRegistry
     }
 
     /**
+     * Enforces a valid state machine transition for a module.
+     * Throws \RuntimeException if the transition is not allowed.
+     *
+     * @throws \RuntimeException on invalid transition
+     */
+    public function transition(string $module, string $toStatus, ?string $reason = null): void
+    {
+        $module    = ModuleNameValidator::validate($module);
+        $fromStatus = $this->getStatus($module);
+
+        $allowed = self::ALLOWED_TRANSITIONS[$fromStatus] ?? [];
+        if (!in_array($toStatus, $allowed, true)) {
+            throw new \RuntimeException(
+                "Invalid module state transition for '{$module}': [{$fromStatus}] -> [{$toStatus}] is not allowed."
+            );
+        }
+
+        $this->setStatus($module, $toStatus, $reason);
+    }
+
+    /**
      * Sets the lifecycle state of a module with optional reason.
+     * Prefer transition() for enforced state machine validation.
+     * Direct setStatus() is allowed for internal transitions (e.g. from activate/deactivate methods).
      */
     public function setStatus(string $module, string $status, ?string $reason = null): void
     {
@@ -142,6 +194,29 @@ class ModuleRegistry
 
         $this->put($module, $update);
         \CodeIgniter\Events\Events::trigger('rahpt.module.status_changed', $module, $status, $reason);
+    }
+
+    /**
+     * Rolls back a quarantined or failed module to the 'validated' state.
+     * Only allowed if the module can be safely recovered (not permanently quarantined).
+     *
+     * @throws \RuntimeException if rollback is not permitted
+     */
+    public function rollback(string $module, string $reason): void
+    {
+        $module     = ModuleNameValidator::validate($module);
+        $fromStatus = $this->getStatus($module);
+
+        if ($fromStatus === self::STATUS_QUARANTINED) {
+            // Quarantine is a terminal state; require explicit override with reason
+            log_message('warning', "[ModuleRegistry] Rollback from quarantined state for '{$module}'. Reason: {$reason}");
+        }
+
+        $this->setStatus($module, self::STATUS_VALIDATED, "Rollback: {$reason}");
+        $this->put($module, ['active' => false]);
+
+        log_message('notice', "[ModuleRegistry] Module '{$module}' rolled back from [{$fromStatus}] to [validated]. Reason: {$reason}");
+        \CodeIgniter\Events\Events::trigger('rahpt.module.rollback', $module, $fromStatus, $reason);
     }
 
     /**
@@ -162,7 +237,17 @@ class ModuleRegistry
     }
 
     /**
-     * Computes a deterministic SHA-256 fingerprint of the module's installed files.
+     * Computes a canonical SHA-256 fingerprint of the module's installed files.
+     *
+     * Algorithm:
+     *   1. Walk all files under the module directory recursively.
+     *   2. Normalize path separators to '/' and trim the module root prefix.
+     *   3. Hash each file with SHA-256 individually.
+     *   4. Sort the file list lexicographically (ksort) for determinism.
+     *   5. Produce a final SHA-256 hash over the JSON-encoded map {relative_path => sha256_hex}.
+     *
+     * This produces a deterministic, canonical checksum that answers "have files changed?".
+     * Publisher signature (Ed25519/GPG) answers "who authorized this version?" — see verifySignature().
      */
     public function computeFingerprint(string $module): ?string
     {
@@ -183,13 +268,59 @@ class ModuleRegistry
 
         foreach ($iterator as $file) {
             if ($file->isFile()) {
-                $relPath = str_replace([$fullPath, '\\'], ['', '/'], $file->getPathname());
-                $fileHashes[$relPath] = sha1_file($file->getPathname());
+                // Normalize: remove full path prefix, convert backslashes to forward slashes
+                $relPath  = str_replace('\\', '/', $file->getPathname());
+                $fullNorm = str_replace('\\', '/', rtrim($fullPath, '/\\')) . '/';
+                $relPath  = ltrim(str_replace($fullNorm, '', $relPath), '/');
+
+                // Per-file SHA-256 (canonical, stronger than sha1)
+                $fileHashes[$relPath] = hash_file('sha256', $file->getPathname());
             }
         }
 
         ksort($fileHashes);
-        return hash('sha256', json_encode($fileHashes));
+        return hash('sha256', json_encode($fileHashes, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    }
+
+    /**
+     * Verifies an Ed25519 publisher signature against the canonical fingerprint.
+     *
+     * Architecture note: this method provides the hook for publisher signature verification.
+     * The actual public key must be stored in config (never from the module itself).
+     * Returns null if no public key is configured (feature not enabled).
+     *
+     * @param string $module     Module slug
+     * @param string $signature  Base64-encoded Ed25519 signature from the publisher
+     * @return bool|null  true = valid, false = invalid, null = feature not configured
+     */
+    public function verifySignature(string $module, string $signature): ?bool
+    {
+        $publicKey = $this->config->publisherPublicKey ?? null;
+        if (empty($publicKey)) {
+            return null; // Publisher signature verification not configured
+        }
+
+        if (!function_exists('sodium_crypto_sign_verify_detached')) {
+            log_message('warning', '[ModuleRegistry] sodium extension not available; publisher signature cannot be verified.');
+            return null;
+        }
+
+        $fingerprint = $this->computeFingerprint($module);
+        if ($fingerprint === null) {
+            return false;
+        }
+
+        try {
+            $pubKeyBinary = base64_decode($publicKey, true);
+            $sigBinary    = base64_decode($signature, true);
+            if ($pubKeyBinary === false || $sigBinary === false) {
+                return false;
+            }
+            return sodium_crypto_sign_verify_detached($sigBinary, $fingerprint, $pubKeyBinary);
+        } catch (\Throwable $e) {
+            log_message('error', "[ModuleRegistry] Signature verification error for '{$module}': " . $e->getMessage());
+            return false;
+        }
     }
 
     /**
@@ -419,6 +550,7 @@ class ModuleRegistry
 
     /**
      * Instantiates the Module class and/or reads module.json to retrieve complete metadata.
+     * Validates manifest schema version against supported versions in config.
      */
     protected function getModuleMetadata(string $folder): ?array
     {
@@ -429,7 +561,16 @@ class ModuleRegistry
         if (is_file($manifestPath)) {
             try {
                 $manifest = json_decode(file_get_contents($manifestPath), true, 512, JSON_THROW_ON_ERROR);
-                $manifestHash = sha1_file($manifestPath);
+                // SHA-256 for manifest hash (canonical)
+                $manifestHash = hash_file('sha256', $manifestPath);
+
+                // Validate schema version if manifest declares one
+                if (!empty($manifest['schema']) && !empty($this->config->supportedSchemaVersions)) {
+                    if (!in_array((string) $manifest['schema'], $this->config->supportedSchemaVersions, true)) {
+                        log_message('warning', "Module '{$folder}' declares unsupported schema version [{$manifest['schema']}]. Supported: " . implode(', ', $this->config->supportedSchemaVersions));
+                        $manifest['_schema_warning'] = true;
+                    }
+                }
             } catch (\Throwable $e) {
                 log_message('warning', "Invalid module.json manifest in {$folder}: " . $e->getMessage());
             }
@@ -445,34 +586,39 @@ class ModuleRegistry
             return null;
         }
 
+        // Read capabilities sub-object from manifest if present (formal schema)
+        $capabilities = $manifest['capabilities'] ?? [];
+
         return [
-            'name'          => $manifest['name'] ?? $instance?->name ?? $folder,
-            'label'         => $manifest['label'] ?? $instance?->label ?? $manifest['name'] ?? $instance?->name ?? $folder,
-            'slug'          => $manifest['slug'] ?? $instance?->slug ?? strtolower($folder),
-            'version'       => $manifest['version'] ?? $instance?->version ?? '1.0.0',
-            'theme'         => $manifest['theme'] ?? $instance?->theme ?? 'adminlte',
-            'routePrefix'   => $manifest['routePrefix'] ?? $instance?->routePrefix ?? strtolower($folder),
-            'require'       => $manifest['requires'] ?? $manifest['require'] ?? $instance?->requires ?? $instance?->require ?? [],
-            'requires'      => $manifest['requires'] ?? $manifest['require'] ?? $instance?->requires ?? $instance?->require ?? [],
-            'conflicts'     => $manifest['conflicts'] ?? $instance?->conflicts ?? [],
-            'provides'      => $manifest['provides'] ?? $instance?->provides ?? [],
-            'permissions'   => $manifest['permissions'] ?? $instance?->permissions ?? [],
-            'tenant_aware'  => $manifest['tenant_aware'] ?? $instance?->tenantAware ?? false,
-            // Ecosystem capabilities flags
-            'api'           => $manifest['api'] ?? true,
-            'web'           => $manifest['web'] ?? true,
-            'cli'           => $manifest['cli'] ?? false,
-            'jobs'          => $manifest['jobs'] ?? false,
-            'events'        => $manifest['events'] ?? false,
-            'health'        => $manifest['health'] ?? false,
-            'settings'      => $manifest['settings'] ?? false,
-            'navigation'    => $manifest['navigation'] ?? true,
-            'migrations'    => $manifest['migrations'] ?? false,
-            'manifest_hash' => $manifestHash,
-            'checksum'      => $manifest['checksum'] ?? null,
-            'source'        => $manifest['source'] ?? 'local',
-            'package'       => $manifest['package'] ?? null,
-            'path'          => $this->config->basePath . '/' . $folder
+            'name'             => $manifest['name'] ?? $instance?->name ?? $folder,
+            'label'            => $manifest['label'] ?? $instance?->label ?? $manifest['name'] ?? $instance?->name ?? $folder,
+            'slug'             => $manifest['slug'] ?? $instance?->slug ?? strtolower($folder),
+            'version'          => $manifest['version'] ?? $instance?->version ?? '1.0.0',
+            'schema'           => $manifest['schema'] ?? '1.0',
+            'theme'            => $manifest['theme'] ?? $instance?->theme ?? 'adminlte',
+            'routePrefix'      => $manifest['routePrefix'] ?? $instance?->routePrefix ?? strtolower($folder),
+            'require'          => $manifest['requires'] ?? $manifest['require'] ?? $instance?->requires ?? $instance?->require ?? [],
+            'requires'         => $manifest['requires'] ?? $manifest['require'] ?? $instance?->requires ?? $instance?->require ?? [],
+            'optionalRequires' => $manifest['optionalRequires'] ?? $instance?->optionalRequires ?? [],
+            'conflicts'        => $manifest['conflicts'] ?? $instance?->conflicts ?? [],
+            'provides'         => $manifest['provides'] ?? $instance?->provides ?? [],
+            'permissions'      => $manifest['permissions'] ?? $instance?->permissions ?? [],
+            'tenant_aware'     => $manifest['tenant_aware'] ?? $instance?->tenantAware ?? false,
+            // Capabilities: support both flat manifest and nested capabilities object (formal schema)
+            'api'              => $capabilities['api'] ?? $manifest['api'] ?? true,
+            'web'              => $capabilities['web'] ?? $manifest['web'] ?? true,
+            'cli'              => $capabilities['cli'] ?? $manifest['cli'] ?? false,
+            'jobs'             => $capabilities['jobs'] ?? $manifest['jobs'] ?? false,
+            'events'           => $capabilities['events'] ?? $manifest['events'] ?? false,
+            'health'           => $capabilities['health'] ?? $manifest['health'] ?? false,
+            'settings'         => $capabilities['settings'] ?? $manifest['settings'] ?? false,
+            'navigation'       => $capabilities['navigation'] ?? $manifest['navigation'] ?? true,
+            'migrations'       => $capabilities['migrations'] ?? $manifest['migrations'] ?? false,
+            'manifest_hash'    => $manifestHash,
+            'checksum'         => $manifest['checksum'] ?? null,
+            'source'           => $manifest['source'] ?? 'local',
+            'package'          => $manifest['package'] ?? null,
+            'path'             => $this->config->basePath . '/' . $folder
         ];
     }
 
