@@ -74,7 +74,7 @@ class DependencyCheckerTest extends TestCase
         // Should detect version incompatibility
     }
 
-    public function test AllDependenciesSatisfied()
+    public function testAllDependenciesSatisfied()
     {
         $this->markTestIncomplete('To be implemented');
         
