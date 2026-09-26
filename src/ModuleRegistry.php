@@ -252,27 +252,70 @@ class ModuleRegistry
     }
 
     /**
-     * Instantiates the Module class to retrieve its metadata.
+     * Instantiates the Module class and/or reads module.json to retrieve complete metadata.
      */
     protected function getModuleMetadata(string $folder): ?array
     {
-        $class = $this->config->baseNamespace . "\\" . ucfirst($folder) . "\\Config\\Module";
+        $manifest = [];
+        $manifestPath = APPPATH . $this->config->basePath . DIRECTORY_SEPARATOR . $folder . DIRECTORY_SEPARATOR . 'module.json';
+        $manifestHash = null;
 
-        if (class_exists($class)) {
-            $instance = $this->getModuleInstance($class);
-            return [
-                'name' => $instance->name ?? $folder,
-                'label' => $instance->label ?? $instance->name ?? $folder,
-                'slug' => $instance->slug ?? strtolower($folder),
-                'version' => $instance->version ?? '1.0.0',
-                'theme' => $instance->theme ?? 'adminlte',
-                'routePrefix' => $instance->routePrefix ?? strtolower($folder),
-                'require' => $instance->require ?? [],
-                'path' => $this->config->basePath . '/' . $folder
-            ];
+        if (is_file($manifestPath)) {
+            try {
+                $manifest = json_decode(file_get_contents($manifestPath), true, 512, JSON_THROW_ON_ERROR);
+                $manifestHash = sha1_file($manifestPath);
+            } catch (\Throwable $e) {
+                log_message('warning', "Invalid module.json manifest in {$folder}: " . $e->getMessage());
+            }
         }
 
-        return null;
+        $class = $this->config->baseNamespace . "\\" . ucfirst($folder) . "\\Config\\Module";
+        $instance = null;
+        if (class_exists($class)) {
+            $instance = $this->getModuleInstance($class);
+        }
+
+        if (!$instance && empty($manifest)) {
+            return null;
+        }
+
+        return [
+            'name' => $manifest['name'] ?? $instance?->name ?? $folder,
+            'label' => $manifest['label'] ?? $instance?->label ?? $manifest['name'] ?? $instance?->name ?? $folder,
+            'slug' => $manifest['slug'] ?? $instance?->slug ?? strtolower($folder),
+            'version' => $manifest['version'] ?? $instance?->version ?? '1.0.0',
+            'theme' => $manifest['theme'] ?? $instance?->theme ?? 'adminlte',
+            'routePrefix' => $manifest['routePrefix'] ?? $instance?->routePrefix ?? strtolower($folder),
+            'require' => $manifest['requires'] ?? $manifest['require'] ?? $instance?->require ?? [],
+            'permissions' => $manifest['permissions'] ?? $instance?->permissions ?? [],
+            'tenant_aware' => $manifest['tenant_aware'] ?? $instance?->tenantAware ?? false,
+            'manifest_hash' => $manifestHash,
+            'path' => $this->config->basePath . '/' . $folder
+        ];
+    }
+
+    /**
+     * Gets all declared permissions from registered modules, optionally filtered by module.
+     * Essential for automated Shield permission synchronization.
+     *
+     * @return array<string, list<string>>
+     */
+    public function getPermissions(?string $module = null): array
+    {
+        $available = $this->getAvailableModules();
+        $permissions = [];
+
+        if ($module !== null) {
+            return $available[$module]['permissions'] ?? [];
+        }
+
+        foreach ($available as $slug => $data) {
+            if (!empty($data['permissions'])) {
+                $permissions[$slug] = $data['permissions'];
+            }
+        }
+
+        return $permissions;
     }
 
     /**
