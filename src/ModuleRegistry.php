@@ -5,12 +5,25 @@ namespace Rahpt\Ci4Module;
 use Exception;
 use JsonException;
 use Rahpt\Ci4Module\Config\Modules;
+use Rahpt\Ci4Module\Validators\DependencyChecker;
+use Rahpt\Ci4Module\Validators\ModuleNameValidator;
 
 /**
- * ModuleRegistry - Manages module registration in modules.json
+ * ModuleRegistry - Manages module registration, lifecycle state machine, and dependency tracking in modules.json
  */
 class ModuleRegistry
 {
+    // Transactional state machine constants
+    public const STATUS_DISCOVERED   = 'discovered';
+    public const STATUS_VALIDATED    = 'validated';
+    public const STATUS_INSTALLED    = 'installed';
+    public const STATUS_ACTIVATING   = 'activating';
+    public const STATUS_ACTIVE       = 'active';
+    public const STATUS_DEACTIVATING = 'deactivating';
+    public const STATUS_DISABLED     = 'disabled';
+    public const STATUS_FAILED       = 'failed';
+    public const STATUS_QUARANTINED  = 'quarantined';
+
     protected Modules $config;
 
     /**
@@ -57,12 +70,12 @@ class ModuleRegistry
     public function put(string $module, array $data): void
     {
         // Enforce strict module name format
-        $module = \Rahpt\Ci4Module\Validators\ModuleNameValidator::validate($module);
+        $module = ModuleNameValidator::validate($module);
 
         $fileName = $this->getCentralRegistryPath();
         $all = $this->all();
 
-        $all[$module] = array_merge($all[$module] ?? ['active' => true], $data);
+        $all[$module] = array_merge($all[$module] ?? ['active' => true, 'status' => self::STATUS_INSTALLED], $data);
 
         $json = json_encode($all, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         if ($json === false) {
@@ -103,9 +116,54 @@ class ModuleRegistry
         }
     }
 
+    /**
+     * Retrieves the lifecycle state of a module.
+     */
+    public function getStatus(string $module): string
+    {
+        $module = ModuleNameValidator::validate($module);
+        $all = $this->all();
+        return $all[$module]['status'] ?? self::STATUS_DISCOVERED;
+    }
+
+    /**
+     * Sets the lifecycle state of a module with optional reason.
+     */
+    public function setStatus(string $module, string $status, ?string $reason = null): void
+    {
+        $module = ModuleNameValidator::validate($module);
+        $update = [
+            'status'     => $status,
+            'updated_at' => date('Y-m-d H:i:s'),
+        ];
+        if ($reason !== null) {
+            $update['status_reason'] = $reason;
+        }
+
+        $this->put($module, $update);
+        \CodeIgniter\Events\Events::trigger('rahpt.module.status_changed', $module, $status, $reason);
+    }
+
+    /**
+     * Quarantines a compromised or corrupted module.
+     */
+    public function quarantine(string $module, string $reason): void
+    {
+        $module = ModuleNameValidator::validate($module);
+        $this->put($module, [
+            'active'         => false,
+            'status'         => self::STATUS_QUARANTINED,
+            'status_reason'  => $reason,
+            'quarantined_at' => date('Y-m-d H:i:s'),
+        ]);
+
+        log_message('critical', "Module '{$module}' quarantined: {$reason}");
+        \CodeIgniter\Events\Events::trigger('rahpt.module.quarantined', $module, $reason);
+    }
+
     public function activate(string $module): bool
     {
-        $module = \Rahpt\Ci4Module\Validators\ModuleNameValidator::validate($module);
+        $module = ModuleNameValidator::validate($module);
 
         $available = $this->getAvailableModules();
         if (!isset($available[$module])) {
@@ -113,10 +171,29 @@ class ModuleRegistry
             return false;
         }
 
+        // 1. Check if quarantined
+        if ($this->getStatus($module) === self::STATUS_QUARANTINED) {
+            log_message('error', "Cannot activate quarantined module '{$module}'");
+            return false;
+        }
+
+        // 2. Validate dependencies and conflicts before attempting activation
+        $checker = new DependencyChecker($this);
+        $result = $checker->check($module);
+        if (!$result->success) {
+            $errorMsg = implode('; ', $checker->getErrorMessages($result));
+            log_message('error', "Cannot activate module '{$module}': {$errorMsg}");
+            $this->setStatus($module, self::STATUS_FAILED, "Dependency check failed: {$errorMsg}");
+            return false;
+        }
+
         $folder = basename($available[$module]['path']);
         $class = $this->config->baseNamespace . "\\" . ucfirst($folder) . "\\Config\\Module";
 
-        // 1. Run module activation hook BEFORE updating persistent state (transactional consistency)
+        // 3. Mark state as activating
+        $this->setStatus($module, self::STATUS_ACTIVATING);
+
+        // 4. Run module activation hook BEFORE updating persistent active state (transactional consistency)
         if (class_exists($class)) {
             try {
                 $instance = $this->getModuleInstance($class);
@@ -125,17 +202,19 @@ class ModuleRegistry
                 }
             } catch (\Throwable $e) {
                 log_message('error', "Activation hook failed for module '{$module}': " . $e->getMessage());
+                $this->setStatus($module, self::STATUS_FAILED, "Activation hook error: " . $e->getMessage());
                 \CodeIgniter\Events\Events::trigger('rahpt.module.activation_failed', $module, $e);
                 return false;
             }
         }
 
-        // 2. Persist state only after activation hook succeeds
+        // 5. Persist state as active only after hook succeeds
         $data = $this->all();
         $current = $data[$module] ?? [];
         $current['active'] = true;
-        $current['status'] = 'active';
+        $current['status'] = self::STATUS_ACTIVE;
         $current['activated_at'] = date('Y-m-d H:i:s');
+        unset($current['status_reason']);
 
         try {
             $this->put($module, $current);
@@ -146,13 +225,16 @@ class ModuleRegistry
             return true;
         } catch (\Throwable $e) {
             log_message('error', "Failed to persist active status for module '{$module}': " . $e->getMessage());
+            $this->setStatus($module, self::STATUS_FAILED, "Persistence failure: " . $e->getMessage());
             return false;
         }
     }
 
     public function deactivate(string $module): void
     {
-        $module = \Rahpt\Ci4Module\Validators\ModuleNameValidator::validate($module);
+        $module = ModuleNameValidator::validate($module);
+
+        $this->setStatus($module, self::STATUS_DEACTIVATING);
 
         // Resolve the correct class for the module slug
         $available = $this->getAvailableModules();
@@ -169,8 +251,8 @@ class ModuleRegistry
         }
 
         $this->put($module, [
-            'active' => false,
-            'status' => 'disabled',
+            'active'         => false,
+            'status'         => self::STATUS_DISABLED,
             'deactivated_at' => date('Y-m-d H:i:s'),
         ]);
 
@@ -203,6 +285,7 @@ class ModuleRegistry
                     if ($metadata) {
                         $name = $metadata['slug'] ?? $folder;
                         $metadata['active'] = $central[$name]['active'] ?? false;
+                        $metadata['status'] = $central[$name]['status'] ?? self::STATUS_INSTALLED;
                         $modules[$name] = $metadata;
                     }
                 }
@@ -227,7 +310,7 @@ class ModuleRegistry
     public function getDependencies(string $moduleName): array
     {
         $metadata = $this->getModuleMetadata($moduleName);
-        return $metadata['require'] ?? [];
+        return $metadata['require'] ?? $metadata['requires'] ?? [];
     }
 
     /**
@@ -241,8 +324,9 @@ class ModuleRegistry
         $result = [];
         foreach ($available as $slug => $data) {
             $result[$slug] = [
-                'metadata' => $data,
-                'active' => $data['active'] ?? false,
+                'metadata'     => $data,
+                'active'       => $data['active'] ?? false,
+                'status'       => $central[$slug]['status'] ?? self::STATUS_INSTALLED,
                 'installed_at' => $central[$slug]['installed_at'] ?? null,
                 'activated_at' => $central[$slug]['activated_at'] ?? null,
             ];
@@ -280,17 +364,23 @@ class ModuleRegistry
         }
 
         return [
-            'name' => $manifest['name'] ?? $instance?->name ?? $folder,
-            'label' => $manifest['label'] ?? $instance?->label ?? $manifest['name'] ?? $instance?->name ?? $folder,
-            'slug' => $manifest['slug'] ?? $instance?->slug ?? strtolower($folder),
-            'version' => $manifest['version'] ?? $instance?->version ?? '1.0.0',
-            'theme' => $manifest['theme'] ?? $instance?->theme ?? 'adminlte',
-            'routePrefix' => $manifest['routePrefix'] ?? $instance?->routePrefix ?? strtolower($folder),
-            'require' => $manifest['requires'] ?? $manifest['require'] ?? $instance?->require ?? [],
-            'permissions' => $manifest['permissions'] ?? $instance?->permissions ?? [],
-            'tenant_aware' => $manifest['tenant_aware'] ?? $instance?->tenantAware ?? false,
+            'name'          => $manifest['name'] ?? $instance?->name ?? $folder,
+            'label'         => $manifest['label'] ?? $instance?->label ?? $manifest['name'] ?? $instance?->name ?? $folder,
+            'slug'          => $manifest['slug'] ?? $instance?->slug ?? strtolower($folder),
+            'version'       => $manifest['version'] ?? $instance?->version ?? '1.0.0',
+            'theme'         => $manifest['theme'] ?? $instance?->theme ?? 'adminlte',
+            'routePrefix'   => $manifest['routePrefix'] ?? $instance?->routePrefix ?? strtolower($folder),
+            'require'       => $manifest['requires'] ?? $manifest['require'] ?? $instance?->requires ?? $instance?->require ?? [],
+            'requires'      => $manifest['requires'] ?? $manifest['require'] ?? $instance?->requires ?? $instance?->require ?? [],
+            'conflicts'     => $manifest['conflicts'] ?? $instance?->conflicts ?? [],
+            'provides'      => $manifest['provides'] ?? $instance?->provides ?? [],
+            'permissions'   => $manifest['permissions'] ?? $instance?->permissions ?? [],
+            'tenant_aware'  => $manifest['tenant_aware'] ?? $instance?->tenantAware ?? false,
             'manifest_hash' => $manifestHash,
-            'path' => $this->config->basePath . '/' . $folder
+            'checksum'      => $manifest['checksum'] ?? null,
+            'source'        => $manifest['source'] ?? 'local',
+            'package'       => $manifest['package'] ?? null,
+            'path'          => $this->config->basePath . '/' . $folder
         ];
     }
 

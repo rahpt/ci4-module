@@ -6,7 +6,7 @@ use Exception;
 use Rahpt\Ci4Module\ModuleRegistry;
 
 /**
- * DependencyChecker - Validates module dependencies
+ * DependencyChecker - Validates module dependencies, conflicts, environment requirements, and virtual provides.
  */
 class DependencyChecker
 {
@@ -18,76 +18,181 @@ class DependencyChecker
     }
 
     /**
-     * Check if all dependencies for a module are satisfied
-     * 
-     * @throws Exception if dependencies are not met
+     * Check if all dependencies, environment constraints, and conflict rules are satisfied.
      */
     public function check(string $moduleName): DependencyCheckResult
     {
-        $dependencies = $this->registry->getDependencies($moduleName);
-        
-        if (empty($dependencies)) {
-            return new DependencyCheckResult(true, []);
-        }
+        $metadata = $this->getModuleMetadata($moduleName);
+        $dependencies = $metadata['require'] ?? $metadata['requires'] ?? [];
+        $conflicts = $metadata['conflicts'] ?? [];
 
-        $missing = [];
-        $versionMismatches = [];
+        $issues = [];
 
+        // 1. Validate requirements (requires)
         foreach ($dependencies as $depName => $requiredVersion) {
-            // Check if dependency is installed
-            if (!$this->registry->isInstalled($depName)) {
-                $missing[] = [
-                    'module' => $depName,
+            $depLower = strtolower($depName);
+
+            // PHP runtime requirement check
+            if ($depLower === 'php') {
+                if (!$this->isVersionCompatible(PHP_VERSION, $requiredVersion)) {
+                    $issues[] = [
+                        'type'              => 'runtime',
+                        'module'            => 'php',
+                        'required_version'  => $requiredVersion,
+                        'installed_version' => PHP_VERSION,
+                        'reason'            => 'PHP version requirement not met',
+                    ];
+                }
+                continue;
+            }
+
+            // CodeIgniter 4 framework version check
+            if ($depLower === 'codeigniter4/framework' || $depLower === 'ci4' || $depLower === 'codeigniter') {
+                $ciVersion = defined('\CodeIgniter\CodeIgniter::CI_VERSION') ? \CodeIgniter\CodeIgniter::CI_VERSION : '4.0.0';
+                if (!$this->isVersionCompatible($ciVersion, $requiredVersion)) {
+                    $issues[] = [
+                        'type'              => 'runtime',
+                        'module'            => 'CodeIgniter',
+                        'required_version'  => $requiredVersion,
+                        'installed_version' => $ciVersion,
+                        'reason'            => 'CodeIgniter version requirement not met',
+                    ];
+                }
+                continue;
+            }
+
+            // Check if installed or provided by another module
+            if (!$this->isInstalledOrProvided($depName)) {
+                $issues[] = [
+                    'type'             => 'missing',
+                    'module'           => $depName,
                     'required_version' => $requiredVersion,
-                    'reason' => 'Module not installed'
+                    'reason'           => 'Module not installed or provided',
                 ];
                 continue;
             }
 
-            // Check version compatibility
+            // Check version compatibility if module is directly installed
             $installedVersion = $this->getInstalledVersion($depName);
-            
-            if (!$this->isVersionCompatible($installedVersion, $requiredVersion)) {
-                $versionMismatches[] = [
-                    'module' => $depName,
-                    'required_version' => $requiredVersion,
+            if ($installedVersion !== null && !$this->isVersionCompatible($installedVersion, $requiredVersion)) {
+                $issues[] = [
+                    'type'              => 'version_mismatch',
+                    'module'            => $depName,
+                    'required_version'  => $requiredVersion,
                     'installed_version' => $installedVersion,
-                    'reason' => 'Version mismatch'
+                    'reason'            => 'Version mismatch',
                 ];
             }
         }
 
-        $issues = array_merge($missing, $versionMismatches);
-        $success = empty($issues);
+        // 2. Validate declared conflicts
+        foreach ($conflicts as $conflictKey => $conflictVal) {
+            $conflictName = is_int($conflictKey) ? $conflictVal : $conflictKey;
+            if ($this->registry->isInstalled($conflictName)) {
+                $issues[] = [
+                    'type'             => 'conflict',
+                    'module'           => $conflictName,
+                    'required_version' => 'none',
+                    'reason'           => "Module conflicts with installed module '{$conflictName}'",
+                ];
+            }
+        }
 
+        // 3. Validate reverse conflicts (is this module conflicted by an already installed module?)
+        $allModules = $this->registry->getAvailableModules();
+        $targetSlug = strtolower($moduleName);
+
+        foreach ($allModules as $slug => $data) {
+            if ($slug === $targetSlug) {
+                continue;
+            }
+
+            $otherConflicts = $data['conflicts'] ?? [];
+            foreach ($otherConflicts as $cKey => $cVal) {
+                $conflicting = strtolower(is_int($cKey) ? $cVal : $cKey);
+                if ($conflicting === $targetSlug) {
+                    $issues[] = [
+                        'type'             => 'conflict',
+                        'module'           => $slug,
+                        'required_version' => 'none',
+                        'reason'           => "Installed module '{$slug}' conflicts with '{$moduleName}'",
+                    ];
+                }
+            }
+        }
+
+        $success = empty($issues);
         return new DependencyCheckResult($success, $issues);
     }
 
     /**
-     * Get installed version of a module
+     * Checks if a package name is directly installed or provided by another active module.
      */
-    protected function getInstalledVersion(string $moduleName): string
+    protected function isInstalledOrProvided(string $name): bool
     {
+        if ($this->registry->isInstalled($name)) {
+            return true;
+        }
+
+        $nameLower = strtolower($name);
         $modules = $this->registry->getAvailableModules();
-        
-        foreach ($modules as $slug => $data) {
-            if (strtolower($slug) === strtolower($moduleName) || 
-                strtolower($data['name'] ?? '') === strtolower($moduleName)) {
-                return $data['version'] ?? '0.0.0';
+
+        foreach ($modules as $data) {
+            $provides = $data['provides'] ?? [];
+            foreach ($provides as $provKey => $provVal) {
+                $providedName = strtolower(is_int($provKey) ? $provVal : $provKey);
+                if ($providedName === $nameLower) {
+                    return true;
+                }
             }
         }
-        
-        return '0.0.0';
+
+        return false;
     }
 
     /**
-     * Check if installed version satisfies requirement
+     * Get module metadata.
+     */
+    protected function getModuleMetadata(string $moduleName): array
+    {
+        $modules = $this->registry->getAvailableModules();
+        $target = strtolower($moduleName);
+
+        foreach ($modules as $slug => $data) {
+            if (strtolower($slug) === $target || strtolower($data['name'] ?? '') === $target) {
+                return $data;
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Get installed version of a module.
+     */
+    protected function getInstalledVersion(string $moduleName): ?string
+    {
+        $modules = $this->registry->getAvailableModules();
+        $target = strtolower($moduleName);
+
+        foreach ($modules as $slug => $data) {
+            if (strtolower($slug) === $target || strtolower($data['name'] ?? '') === $target) {
+                return $data['version'] ?? '0.0.0';
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Check if installed version satisfies requirement.
      * Supports: ^1.0, ~1.2, >=1.0, >1.0, <=1.0, <1.0, 1.0, 1.0.*, 1.*
      */
-    protected function isVersionCompatible(string $installed, string $requirement): bool
+    public function isVersionCompatible(string $installed, string $requirement): bool
     {
-        // Exact match
-        if ($installed === $requirement) {
+        $requirement = trim($requirement);
+
+        if ($installed === $requirement || $requirement === '*' || empty($requirement)) {
             return true;
         }
 
@@ -104,8 +209,8 @@ class DependencyChecker
         // Comparison operators
         if (preg_match('/^(>=|>|<=|<|=)(.+)$/', $requirement, $matches)) {
             $operator = $matches[1];
-            $version = $matches[2];
-            return $this->compareVersions($installed, $operator, $version);
+            $version = trim($matches[2]);
+            return version_compare($installed, $version, $operator);
         }
 
         // Wildcard (1.0.*, 1.*)
@@ -113,14 +218,9 @@ class DependencyChecker
             return $this->checkWildcardVersion($installed, $requirement);
         }
 
-        // Default: exact match required
         return $installed === $requirement;
     }
 
-    /**
-     * Caret version check (^1.2.3)
-     * Allows changes that do not modify left-most non-zero digit
-     */
     protected function checkCaretVersion(string $installed, string $required): bool
     {
         $installedParts = explode('.', $installed);
@@ -132,7 +232,7 @@ class DependencyChecker
         }
 
         // If major is 0, minor must match
-        if (($requiredParts[0] ?? '0') === '0' && 
+        if (($requiredParts[0] ?? '0') === '0' &&
             ($installedParts[1] ?? '0') !== ($requiredParts[1] ?? '0')) {
             return false;
         }
@@ -140,10 +240,6 @@ class DependencyChecker
         return version_compare($installed, $required, '>=');
     }
 
-    /**
-     * Tilde version check (~1.2.3)
-     * Allows patch-level changes
-     */
     protected function checkTildeVersion(string $installed, string $required): bool
     {
         $installedParts = explode('.', $installed);
@@ -158,17 +254,6 @@ class DependencyChecker
         return version_compare($installed, $required, '>=');
     }
 
-    /**
-     * Compare versions using operator
-     */
-    protected function compareVersions(string $installed, string $operator, string $required): bool
-    {
-        return version_compare($installed, $required, $operator);
-    }
-
-    /**
-     * Wildcard version check (1.0.*, 1.*)
-     */
     protected function checkWildcardVersion(string $installed, string $pattern): bool
     {
         $installedParts = explode('.', $installed);
@@ -176,9 +261,9 @@ class DependencyChecker
 
         foreach ($patternParts as $index => $part) {
             if ($part === '*') {
-                return true; // Rest can be anything
+                return true;
             }
-            
+
             if (($installedParts[$index] ?? '0') !== $part) {
                 return false;
             }
@@ -188,7 +273,7 @@ class DependencyChecker
     }
 
     /**
-     * Get human-readable error messages
+     * Get human-readable error messages.
      */
     public function getErrorMessages(DependencyCheckResult $result): array
     {
@@ -198,14 +283,20 @@ class DependencyChecker
 
         $messages = [];
         foreach ($result->issues as $issue) {
-            $module = $issue['module'];
-            $required = $issue['required_version'];
-            
-            if ($issue['reason'] === 'Module not installed') {
-                $messages[] = "Missing dependency: {$module} (required: {$required})";
+            $reason = $issue['reason'] ?? 'Dependency issue';
+            $module = $issue['module'] ?? 'unknown';
+
+            if (($issue['type'] ?? '') === 'conflict') {
+                $messages[] = "Conflict error: {$reason}";
+            } elseif (($issue['type'] ?? '') === 'missing') {
+                $req = $issue['required_version'] ?? '*';
+                $messages[] = "Missing dependency: {$module} (required: {$req})";
+            } elseif (($issue['type'] ?? '') === 'version_mismatch') {
+                $req = $issue['required_version'] ?? '';
+                $inst = $issue['installed_version'] ?? '';
+                $messages[] = "Version mismatch: {$module} requires {$req}, but {$inst} is installed";
             } else {
-                $installed = $issue['installed_version'];
-                $messages[] = "Version mismatch: {$module} requires {$required}, but {$installed} is installed";
+                $messages[] = "{$module}: {$reason}";
             }
         }
 

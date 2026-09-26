@@ -4,7 +4,6 @@ namespace Rahpt\Ci4Module;
 
 abstract class BaseModule implements ModuleInterface
 {
-
     public string $name;
     public string $label;
     public string $slug;
@@ -13,7 +12,32 @@ abstract class BaseModule implements ModuleInterface
     public string $routePrefix = '';
     public string $tablePrefix = '';
     public int $priority = 0;
+
+    /**
+     * Module requirements (e.g. ['php' => '>=8.2', 'codeigniter4/framework' => '^4.6', 'another_module' => '^1.0'])
+     */
     public array $require = [];
+    public array $requires = [];
+
+    /**
+     * Conflicting modules that cannot coexist with this module
+     */
+    public array $conflicts = [];
+
+    /**
+     * Virtual features or aliases provided by this module
+     */
+    public array $provides = [];
+
+    /**
+     * Declared Shield permissions (e.g. ['contracts.view', 'contracts.create'])
+     */
+    public array $permissions = [];
+
+    /**
+     * Indicates whether this module is tenant-isolated
+     */
+    public bool $tenantAware = false;
 
     /**
      * Returns the module menu items.
