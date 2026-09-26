@@ -161,6 +161,81 @@ class ModuleRegistry
         \CodeIgniter\Events\Events::trigger('rahpt.module.quarantined', $module, $reason);
     }
 
+    /**
+     * Computes a deterministic SHA-256 fingerprint of the module's installed files.
+     */
+    public function computeFingerprint(string $module): ?string
+    {
+        $available = $this->getAvailableModules();
+        if (!isset($available[$module])) {
+            return null;
+        }
+
+        $fullPath = APPPATH . $available[$module]['path'];
+        if (!is_dir($fullPath)) {
+            return null;
+        }
+
+        $fileHashes = [];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($fullPath, \FilesystemIterator::SKIP_DOTS)
+        );
+
+        foreach ($iterator as $file) {
+            if ($file->isFile()) {
+                $relPath = str_replace([$fullPath, '\\'], ['', '/'], $file->getPathname());
+                $fileHashes[$relPath] = sha1_file($file->getPathname());
+            }
+        }
+
+        ksort($fileHashes);
+        return hash('sha256', json_encode($fileHashes));
+    }
+
+    /**
+     * Verifies the integrity of a module against recorded hash or manifest checksum.
+     * Transitions module to QUARANTINED if an unapproved modification or corruption is detected.
+     */
+    public function verifyIntegrity(string $module): bool
+    {
+        $module = ModuleNameValidator::validate($module);
+        $metadata = $this->getModuleMetadata($module);
+        if (!$metadata) {
+            return false;
+        }
+
+        $central = $this->all($module)[$module] ?? [];
+        $expectedFingerprint = $central['fingerprint'] ?? null;
+        $expectedChecksum = $metadata['checksum'] ?? null;
+
+        if ($expectedFingerprint !== null || $expectedChecksum !== null) {
+            $currentFingerprint = $this->computeFingerprint($module);
+
+            if ($expectedFingerprint !== null && $currentFingerprint !== $expectedFingerprint) {
+                $this->quarantine($module, "Fingerprint mismatch. Expected {$expectedFingerprint}, got {$currentFingerprint}");
+                return false;
+            }
+
+            if ($expectedChecksum !== null && $currentFingerprint !== $expectedChecksum) {
+                $this->quarantine($module, "Checksum mismatch against declared manifest checksum.");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Records the current module files fingerprint into the registry.
+     */
+    public function recordFingerprint(string $module): void
+    {
+        $fingerprint = $this->computeFingerprint($module);
+        if ($fingerprint !== null) {
+            $this->put($module, ['fingerprint' => $fingerprint]);
+        }
+    }
+
     public function activate(string $module): bool
     {
         $module = ModuleNameValidator::validate($module);
@@ -177,7 +252,13 @@ class ModuleRegistry
             return false;
         }
 
-        // 2. Validate dependencies and conflicts before attempting activation
+        // 2. Verify module integrity
+        if (!$this->verifyIntegrity($module)) {
+            log_message('error', "Integrity check failed for module '{$module}' - module quarantined.");
+            return false;
+        }
+
+        // 3. Validate dependencies and conflicts before attempting activation
         $checker = new DependencyChecker($this);
         $result = $checker->check($module);
         if (!$result->success) {
@@ -190,10 +271,10 @@ class ModuleRegistry
         $folder = basename($available[$module]['path']);
         $class = $this->config->baseNamespace . "\\" . ucfirst($folder) . "\\Config\\Module";
 
-        // 3. Mark state as activating
+        // 4. Mark state as activating
         $this->setStatus($module, self::STATUS_ACTIVATING);
 
-        // 4. Run module activation hook BEFORE updating persistent active state (transactional consistency)
+        // 5. Run module activation hook BEFORE updating persistent active state (transactional consistency)
         if (class_exists($class)) {
             try {
                 $instance = $this->getModuleInstance($class);
@@ -208,12 +289,13 @@ class ModuleRegistry
             }
         }
 
-        // 5. Persist state as active only after hook succeeds
+        // 6. Record fingerprint and persist state as active only after hook succeeds
         $data = $this->all();
         $current = $data[$module] ?? [];
         $current['active'] = true;
         $current['status'] = self::STATUS_ACTIVE;
         $current['activated_at'] = date('Y-m-d H:i:s');
+        $current['fingerprint'] = $this->computeFingerprint($module);
         unset($current['status_reason']);
 
         try {
@@ -376,6 +458,16 @@ class ModuleRegistry
             'provides'      => $manifest['provides'] ?? $instance?->provides ?? [],
             'permissions'   => $manifest['permissions'] ?? $instance?->permissions ?? [],
             'tenant_aware'  => $manifest['tenant_aware'] ?? $instance?->tenantAware ?? false,
+            // Ecosystem capabilities flags
+            'api'           => $manifest['api'] ?? true,
+            'web'           => $manifest['web'] ?? true,
+            'cli'           => $manifest['cli'] ?? false,
+            'jobs'          => $manifest['jobs'] ?? false,
+            'events'        => $manifest['events'] ?? false,
+            'health'        => $manifest['health'] ?? false,
+            'settings'      => $manifest['settings'] ?? false,
+            'navigation'    => $manifest['navigation'] ?? true,
+            'migrations'    => $manifest['migrations'] ?? false,
             'manifest_hash' => $manifestHash,
             'checksum'      => $manifest['checksum'] ?? null,
             'source'        => $manifest['source'] ?? 'local',
